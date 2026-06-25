@@ -7,7 +7,7 @@ from pathlib import Path
 from .api import compare_gds_files
 from .config import AllowedRegion, CompareConfig, LayerSpec
 from .exact_oracle import format_twice_area
-from .semantics import Backend, DifferenceDirection, FailurePolicy
+from .semantics import Backend, DifferenceDirection, EvidenceEngine, FailurePolicy
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,6 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layers", default="all", help="Layer selector such as '1:0,2:0' or 'all'.")
     parser.add_argument("--tile-size", type=int, default=1024)
     parser.add_argument("--backend", choices=[item.value for item in Backend], default=Backend.CPU.value)
+    parser.add_argument(
+        "--evidence-engine",
+        choices=[item.value for item in EvidenceEngine],
+        default=EvidenceEngine.AUTO.value,
+        help="Evidence generator to use. gpu-polygon is the default GPU/native evidence path; CPU gdstk is explicit audit/fallback.",
+    )
     parser.add_argument("--failure-policy", choices=[item.value for item in FailurePolicy], default=FailurePolicy.FAIL_ON_UNEXPECTED.value)
     parser.add_argument("--allow-region", action="append", default=[], metavar="L:D,DIRECTION,X0,Y0,X1,Y1[,HALO]")
     parser.add_argument("--allow-whole-layer", action="append", default=[], metavar="L:D,DIRECTION")
@@ -32,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--verify-exact-after-fast",
         action="store_true",
         help="For eligible accelerated fast verdicts, run full exact verification afterward and attach polygon-level evidence.",
+    )
+    parser.add_argument(
+        "--audit-cpu-oracle",
+        action="store_true",
+        help="After a GPU evidence path, run the CPU gdstk oracle as audit evidence when supported.",
     )
     parser.add_argument(
         "--exact-component-backend",
@@ -88,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             new_top=args.new_top,
             layers=args.layers,
             backend=args.backend,
+            evidence_engine=args.evidence_engine,
             tile_size=args.tile_size,
             allowed_regions=allowed_regions,
             failure_policy=args.failure_policy,
@@ -101,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             exact_diff_markdown_path=args.exact_diff_markdown,
             exact=args.exact,
             verify_exact_after_fast=args.verify_exact_after_fast,
+            audit_cpu_oracle=args.audit_cpu_oracle,
             use_fast_shortcuts=not args.force_geometry_prefilter,
             use_structural_guard=args.structural_guard,
             use_native_geometry_guard=args.native_geometry_guard,

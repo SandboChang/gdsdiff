@@ -10,6 +10,7 @@ from typing import Iterable
 
 from .canonicalize import InternResult, intern_polygons
 from .config import CompareConfig, LayerSpec
+from .backends.polygon_extract_ctypes import NativePolygonExtraction, extract_gds_polygons_native
 from .exact_oracle import ExactOracleResult
 from .extract import ExtractionResult, extract_gds_polygons
 from .semantics import PathPolicy
@@ -18,6 +19,7 @@ from .tiling import CpuTilePrefilterResult
 from .windows import CandidateWindow
 
 CACHE_SCHEMA_VERSION = "gds-gpu-compare-geometry-cache-v1"
+NATIVE_POLYGON_CACHE_SCHEMA_VERSION = "gds-gpu-compare-native-polygon-cache-v1"
 PAIR_VERDICT_SCHEMA_VERSION = "gds-gpu-compare-pair-verdict-cache-v2"
 
 
@@ -39,6 +41,25 @@ class CachedGeometry:
             f"{prefix}_geometry_cache_build_s": self.build_s,
             f"{prefix}_geometry_cache_write_s": self.write_s,
             f"{prefix}_geometry_cache_key": self.cache_key,
+        }
+
+
+@dataclass(frozen=True)
+class CachedNativePolygonExtraction:
+    extraction: NativePolygonExtraction
+    cache_key: str
+    cache_hit: bool
+    load_s: float = 0.0
+    build_s: float = 0.0
+    write_s: float = 0.0
+
+    def to_timing_json(self, prefix: str) -> dict[str, float | bool | str]:
+        return {
+            f"{prefix}_native_polygon_cache_hit": self.cache_hit,
+            f"{prefix}_native_polygon_cache_load_s": self.load_s,
+            f"{prefix}_native_polygon_cache_build_s": self.build_s,
+            f"{prefix}_native_polygon_cache_write_s": self.write_s,
+            f"{prefix}_native_polygon_cache_key": self.cache_key,
         }
 
 
@@ -116,6 +137,58 @@ def load_or_build_cached_geometry(
     )
 
 
+def load_or_build_cached_native_polygons(
+    *,
+    cache_dir: str | Path,
+    path: str | Path,
+    top_name: str | None,
+    layers: str | LayerSpec | Iterable[str | tuple[int, int] | LayerSpec],
+) -> CachedNativePolygonExtraction:
+    cache_dir = Path(cache_dir)
+    path = Path(path)
+    key = native_polygon_cache_key(path=path, top_name=top_name, layers=layers)
+    cache_path = cache_dir / "native_polygons" / f"{key}.pkl"
+    load_start = perf_counter()
+    if cache_path.exists():
+        with cache_path.open("rb") as handle:
+            payload = pickle.load(handle)
+        load_s = perf_counter() - load_start
+        if payload.get("schema_version") == NATIVE_POLYGON_CACHE_SCHEMA_VERSION and payload.get("cache_key") == key:
+            return CachedNativePolygonExtraction(
+                extraction=payload["extraction"],
+                cache_key=key,
+                cache_hit=True,
+                load_s=load_s,
+            )
+
+    build_start = perf_counter()
+    extraction = extract_gds_polygons_native(path, top_name=top_name, layers=layers)
+    build_s = perf_counter() - build_start
+
+    write_start = perf_counter()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_suffix(".tmp")
+    with tmp_path.open("wb") as handle:
+        pickle.dump(
+            {
+                "schema_version": NATIVE_POLYGON_CACHE_SCHEMA_VERSION,
+                "cache_key": key,
+                "extraction": extraction,
+            },
+            handle,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    tmp_path.replace(cache_path)
+    write_s = perf_counter() - write_start
+    return CachedNativePolygonExtraction(
+        extraction=extraction,
+        cache_key=key,
+        cache_hit=False,
+        build_s=build_s,
+        write_s=write_s,
+    )
+
+
 def geometry_cache_key(
     *,
     path: Path,
@@ -137,6 +210,27 @@ def geometry_cache_key(
         "layers": _jsonable_layers(layers),
         "meters_per_dbu": str(meters_per_dbu),
         "path_policy": str(PathPolicy.coerce(path_policy).value),
+    }
+    return hashlib.sha256(json.dumps(metadata, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def native_polygon_cache_key(
+    *,
+    path: Path,
+    top_name: str | None,
+    layers,
+) -> str:
+    stat = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    metadata = {
+        "schema_version": NATIVE_POLYGON_CACHE_SCHEMA_VERSION,
+        "path_sha256": digest.hexdigest(),
+        "path_size": stat.st_size,
+        "top_name": top_name,
+        "layers": _jsonable_layers(layers),
     }
     return hashlib.sha256(json.dumps(metadata, sort_keys=True).encode("utf-8")).hexdigest()
 

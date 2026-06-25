@@ -11,6 +11,7 @@
 #include <thrust/tuple.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,9 @@ constexpr std::uint8_t kNewSide = 2;
 constexpr std::uint8_t kBothSides = kOldSide | kNewSide;
 constexpr int kMaxRectSetRects = 16;
 constexpr int kMaxRectSetCoords = kMaxRectSetRects * 4;
+constexpr int kMaxPolygonComponentEdges = 384;
+constexpr int kMaxPolygonComponentBreaks = 2048;
+constexpr int kMaxPolygonComponentIntervals = 384;
 
 thread_local std::string g_last_error;
 
@@ -260,6 +264,1079 @@ __global__ void byte_compare_kernel(const std::uint8_t* old_data, const std::uin
     }
     if (old_data[index] != new_data[index]) {
         atomicExch(mismatch, 1u);
+    }
+}
+
+struct PolygonRecordKey {
+    std::int32_t layer;
+    std::int32_t datatype;
+    std::uint32_t flags;
+    std::uint64_t vertex_count;
+    std::int64_t x0;
+    std::int64_t y0;
+    std::int64_t x1;
+    std::int64_t y1;
+    std::uint64_t hash0;
+    std::uint64_t hash1;
+
+    __host__ __device__ bool operator<(const PolygonRecordKey& other) const {
+        if (layer != other.layer) return layer < other.layer;
+        if (datatype != other.datatype) return datatype < other.datatype;
+        if (flags != other.flags) return flags < other.flags;
+        if (vertex_count != other.vertex_count) return vertex_count < other.vertex_count;
+        if (x0 != other.x0) return x0 < other.x0;
+        if (y0 != other.y0) return y0 < other.y0;
+        if (x1 != other.x1) return x1 < other.x1;
+        if (y1 != other.y1) return y1 < other.y1;
+        if (hash0 != other.hash0) return hash0 < other.hash0;
+        return hash1 < other.hash1;
+    }
+
+    __host__ __device__ bool operator==(const PolygonRecordKey& other) const {
+        return layer == other.layer && datatype == other.datatype && flags == other.flags
+            && vertex_count == other.vertex_count && x0 == other.x0 && y0 == other.y0 && x1 == other.x1
+            && y1 == other.y1 && hash0 == other.hash0 && hash1 == other.hash1;
+    }
+};
+
+struct PolygonSideRecord {
+    PolygonRecordKey key;
+    std::uint8_t side;
+    std::uint64_t index;
+};
+
+struct PolygonCountPair {
+    std::uint64_t old_count;
+    std::uint64_t new_count;
+    std::uint64_t old_index;
+    std::uint64_t new_index;
+};
+
+struct PolygonRecordToKey {
+    __host__ __device__ PolygonRecordKey operator()(const PolygonSideRecord& item) const {
+        return item.key;
+    }
+};
+
+struct PolygonSideRecordLess {
+    __host__ __device__ bool operator()(const PolygonSideRecord& left, const PolygonSideRecord& right) const {
+        return left.key < right.key;
+    }
+};
+
+struct PolygonRecordToCountPair {
+    __host__ __device__ PolygonCountPair operator()(const PolygonSideRecord& item) const {
+        constexpr std::uint64_t none = UINT64_MAX;
+        return item.side == kOldSide ? PolygonCountPair{1, 0, item.index, none} : PolygonCountPair{0, 1, none, item.index};
+    }
+};
+
+struct PolygonKeyEqual {
+    __host__ __device__ bool operator()(const PolygonRecordKey& left, const PolygonRecordKey& right) const {
+        return left == right;
+    }
+};
+
+struct PolygonCountPairAdd {
+    __host__ __device__ PolygonCountPair operator()(const PolygonCountPair& left, const PolygonCountPair& right) const {
+        return PolygonCountPair{
+            left.old_count + right.old_count,
+            left.new_count + right.new_count,
+            min(left.old_index, right.old_index),
+            min(left.new_index, right.new_index),
+        };
+    }
+};
+
+__device__ std::uint64_t fnv1a_u64_device(std::uint64_t hash, std::uint64_t value) {
+    constexpr std::uint64_t prime = 1099511628211ull;
+    for (int i = 0; i < 8; ++i) {
+        hash ^= (value >> (i * 8)) & 0xffu;
+        hash *= prime;
+    }
+    return hash;
+}
+
+__device__ bool point_less_device(
+    const std::int64_t* vertices_xy,
+    std::uint64_t left_index,
+    std::uint64_t right_index) {
+    const std::int64_t lx = vertices_xy[left_index * 2 + 0];
+    const std::int64_t ly = vertices_xy[left_index * 2 + 1];
+    const std::int64_t rx = vertices_xy[right_index * 2 + 0];
+    const std::int64_t ry = vertices_xy[right_index * 2 + 1];
+    return lx < rx || (lx == rx && ly < ry);
+}
+
+__device__ std::uint64_t sequence_index_device(
+    std::uint64_t start,
+    std::uint64_t count,
+    std::uint64_t candidate,
+    std::uint64_t step,
+    bool forward) {
+    if (forward) {
+        return start + ((candidate + step) % count);
+    }
+    return start + ((candidate + count - (step % count)) % count);
+}
+
+__device__ bool sequence_less_device(
+    const std::int64_t* vertices_xy,
+    std::uint64_t start,
+    std::uint64_t count,
+    std::uint64_t left_candidate,
+    bool left_forward,
+    std::uint64_t right_candidate,
+    bool right_forward) {
+    for (std::uint64_t step = 0; step < count; ++step) {
+        const std::uint64_t left_index = sequence_index_device(start, count, left_candidate, step, left_forward);
+        const std::uint64_t right_index = sequence_index_device(start, count, right_candidate, step, right_forward);
+        if (point_less_device(vertices_xy, left_index, right_index)) {
+            return true;
+        }
+        if (point_less_device(vertices_xy, right_index, left_index)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+__device__ bool is_axis_aligned_bbox_rectangle_device(
+    const std::int64_t* vertices_xy,
+    std::uint64_t start,
+    std::uint64_t count,
+    std::int64_t x0,
+    std::int64_t y0,
+    std::int64_t x1,
+    std::int64_t y1) {
+    if (count != 4 || x0 >= x1 || y0 >= y1) {
+        return false;
+    }
+    bool corners[4] = {false, false, false, false};
+    for (std::uint64_t offset = 0; offset < count; ++offset) {
+        const auto x = vertices_xy[(start + offset) * 2 + 0];
+        const auto y = vertices_xy[(start + offset) * 2 + 1];
+        int corner = -1;
+        if (x == x0 && y == y0) corner = 0;
+        if (x == x0 && y == y1) corner = 1;
+        if (x == x1 && y == y0) corner = 2;
+        if (x == x1 && y == y1) corner = 3;
+        if (corner < 0 || corners[corner]) {
+            return false;
+        }
+        corners[corner] = true;
+    }
+    return corners[0] && corners[1] && corners[2] && corners[3];
+}
+
+__device__ void canonical_polygon_hash_device(
+    const std::int64_t* vertices_xy,
+    std::uint64_t start,
+    std::uint64_t stop,
+    std::uint32_t flags,
+    std::int64_t x0,
+    std::int64_t y0,
+    std::int64_t x1,
+    std::int64_t y1,
+    std::uint64_t* hash0,
+    std::uint64_t* hash1) {
+    const std::uint64_t count = stop - start;
+    std::uint64_t h0 = 1469598103934665603ull;
+    std::uint64_t h1 = 1099511628211ull;
+    if (flags == 0 && is_axis_aligned_bbox_rectangle_device(vertices_xy, start, count, x0, y0, x1, y1)) {
+        h0 = fnv1a_u64_device(fnv1a_u64_device(h0, 2), 0);
+        h0 = fnv1a_u64_device(fnv1a_u64_device(h0, static_cast<std::uint64_t>(x0)), static_cast<std::uint64_t>(y0));
+        h0 = fnv1a_u64_device(fnv1a_u64_device(h0, static_cast<std::uint64_t>(x1)), static_cast<std::uint64_t>(y1));
+        h1 = fnv1a_u64_device(fnv1a_u64_device(h1, static_cast<std::uint64_t>(y1)), static_cast<std::uint64_t>(x1));
+        h1 = fnv1a_u64_device(fnv1a_u64_device(h1, static_cast<std::uint64_t>(y0)), static_cast<std::uint64_t>(x0));
+        *hash0 = h0;
+        *hash1 = h1;
+        return;
+    }
+    std::uint64_t best_candidate = 0;
+    bool best_forward = true;
+    if (flags == 0 && count > 0) {
+        for (std::uint64_t candidate = 1; candidate < count; ++candidate) {
+            if (sequence_less_device(vertices_xy, start, count, candidate, true, best_candidate, best_forward)) {
+                best_candidate = candidate;
+                best_forward = true;
+            }
+        }
+        for (std::uint64_t candidate = 0; candidate < count; ++candidate) {
+            if (sequence_less_device(vertices_xy, start, count, candidate, false, best_candidate, best_forward)) {
+                best_candidate = candidate;
+                best_forward = false;
+            }
+        }
+    }
+    for (std::uint64_t step = 0; step < count; ++step) {
+        const std::uint64_t vertex = flags == 0
+            ? sequence_index_device(start, count, best_candidate, step, best_forward)
+            : start + step;
+        const auto x = static_cast<std::uint64_t>(vertices_xy[vertex * 2 + 0]);
+        const auto y = static_cast<std::uint64_t>(vertices_xy[vertex * 2 + 1]);
+        h0 = fnv1a_u64_device(fnv1a_u64_device(h0, x), y);
+        h1 = fnv1a_u64_device(fnv1a_u64_device(h1, y), x);
+    }
+    *hash0 = h0;
+    *hash1 = h1;
+}
+
+__global__ void polygon_record_key_kernel(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::int32_t* layers,
+    const std::int32_t* datatypes,
+    const std::int64_t* bboxes,
+    const std::uint32_t* flags,
+    std::uint64_t count,
+    std::uint8_t side,
+    std::uint64_t out_offset,
+    PolygonSideRecord* out_records) {
+    const std::uint64_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) {
+        return;
+    }
+    const std::uint64_t start = polygon_offsets[index];
+    const std::uint64_t stop = polygon_offsets[index + 1];
+    std::uint64_t hash0 = 0;
+    std::uint64_t hash1 = 0;
+    canonical_polygon_hash_device(
+        vertices_xy,
+        start,
+        stop,
+        flags[index],
+        bboxes[index * 4 + 0],
+        bboxes[index * 4 + 1],
+        bboxes[index * 4 + 2],
+        bboxes[index * 4 + 3],
+        &hash0,
+        &hash1);
+    out_records[out_offset + index] = PolygonSideRecord{
+        PolygonRecordKey{
+            layers[index],
+            datatypes[index],
+            flags[index],
+            stop - start,
+            bboxes[index * 4 + 0],
+            bboxes[index * 4 + 1],
+            bboxes[index * 4 + 2],
+            bboxes[index * 4 + 3],
+            hash0,
+            hash1,
+        },
+        side,
+        index,
+    };
+}
+
+struct PolygonSweepEdge {
+    double x0;
+    double y0;
+    double x1;
+    double y1;
+    std::uint8_t side;
+    int polygon_slot;
+};
+
+struct PolygonSweepCrossing {
+    double y;
+    int edge_index;
+};
+
+struct PolygonSweepInterval {
+    double low_y;
+    double high_y;
+    int low_edge_index;
+    int high_edge_index;
+};
+
+__device__ double edge_y_at(const PolygonSweepEdge& edge, double x) {
+    const double dx = edge.x1 - edge.x0;
+    if (fabs(dx) < 1e-12) {
+        return edge.y0;
+    }
+    const double t = (x - edge.x0) / dx;
+    return edge.y0 + t * (edge.y1 - edge.y0);
+}
+
+__device__ bool add_breakpoint(double* breaks, int* break_count, double value) {
+    if (*break_count >= kMaxPolygonComponentBreaks || !isfinite(value)) {
+        return false;
+    }
+    for (int i = 0; i < *break_count; ++i) {
+        if (fabs(breaks[i] - value) <= 1e-7) {
+            return true;
+        }
+    }
+    breaks[(*break_count)++] = value;
+    return true;
+}
+
+__device__ void sort_breakpoints(double* breaks, int count) {
+    for (int i = 1; i < count; ++i) {
+        const double value = breaks[i];
+        int j = i - 1;
+        while (j >= 0 && breaks[j] > value) {
+            breaks[j + 1] = breaks[j];
+            --j;
+        }
+        breaks[j + 1] = value;
+    }
+}
+
+__device__ void sort_crossings(PolygonSweepCrossing* crossings, int count) {
+    for (int i = 1; i < count; ++i) {
+        const auto value = crossings[i];
+        int j = i - 1;
+        while (j >= 0 && crossings[j].y > value.y) {
+            crossings[j + 1] = crossings[j];
+            --j;
+        }
+        crossings[j + 1] = value;
+    }
+}
+
+__device__ void sort_intervals(PolygonSweepInterval* intervals, int count) {
+    for (int i = 1; i < count; ++i) {
+        const auto value = intervals[i];
+        int j = i - 1;
+        while (j >= 0 && intervals[j].low_y > value.low_y) {
+            intervals[j + 1] = intervals[j];
+            --j;
+        }
+        intervals[j + 1] = value;
+    }
+}
+
+__device__ bool edge_intersection_x(const PolygonSweepEdge& a, const PolygonSweepEdge& b, double* out_x) {
+    const double ax = a.x1 - a.x0;
+    const double ay = a.y1 - a.y0;
+    const double bx = b.x1 - b.x0;
+    const double by = b.y1 - b.y0;
+    const double denom = ax * by - ay * bx;
+    if (fabs(denom) < 1e-12) {
+        return false;
+    }
+    const double cx = b.x0 - a.x0;
+    const double cy = b.y0 - a.y0;
+    const double ta = (cx * by - cy * bx) / denom;
+    const double tb = (cx * ay - cy * ax) / denom;
+    if (ta < -1e-10 || ta > 1.0 + 1e-10 || tb < -1e-10 || tb > 1.0 + 1e-10) {
+        return false;
+    }
+    *out_x = a.x0 + ta * ax;
+    return true;
+}
+
+__device__ bool build_union_intervals(
+    const PolygonSweepEdge* edges,
+    int edge_count,
+    int polygon_count,
+    std::uint8_t side,
+    double x_mid,
+    PolygonSweepCrossing* crossings,
+    PolygonSweepInterval* intervals,
+    int* interval_count) {
+    int raw_interval_count = 0;
+    for (int polygon_slot = 0; polygon_slot < polygon_count; ++polygon_slot) {
+        int crossing_count = 0;
+        for (int edge_index = 0; edge_index < edge_count; ++edge_index) {
+            const auto& edge = edges[edge_index];
+            if (edge.side != side || edge.polygon_slot != polygon_slot) {
+                continue;
+            }
+            const double min_x = fmin(edge.x0, edge.x1);
+            const double max_x = fmax(edge.x0, edge.x1);
+            if (x_mid <= min_x + 1e-9 || x_mid >= max_x - 1e-9) {
+                continue;
+            }
+            if (crossing_count >= kMaxPolygonComponentIntervals) {
+                return false;
+            }
+            crossings[crossing_count++] = PolygonSweepCrossing{edge_y_at(edge, x_mid), edge_index};
+        }
+        sort_crossings(crossings, crossing_count);
+        for (int i = 0; i + 1 < crossing_count; i += 2) {
+            PolygonSweepInterval next{
+                crossings[i].y,
+                crossings[i + 1].y,
+                crossings[i].edge_index,
+                crossings[i + 1].edge_index,
+            };
+            if (next.high_y <= next.low_y + 1e-9) {
+                continue;
+            }
+            if (raw_interval_count >= kMaxPolygonComponentIntervals) {
+                return false;
+            }
+            intervals[raw_interval_count++] = next;
+        }
+    }
+    sort_intervals(intervals, raw_interval_count);
+    *interval_count = 0;
+    for (int i = 0; i < raw_interval_count; ++i) {
+        const auto next = intervals[i];
+        if (*interval_count == 0 || next.low_y > intervals[*interval_count - 1].high_y + 1e-9) {
+            intervals[(*interval_count)++] = next;
+        } else if (next.high_y > intervals[*interval_count - 1].high_y) {
+            intervals[*interval_count - 1].high_y = next.high_y;
+            intervals[*interval_count - 1].high_edge_index = next.high_edge_index;
+        }
+    }
+    return true;
+}
+
+__device__ double interval_area(
+    const PolygonSweepEdge* edges,
+    const PolygonSweepInterval& interval,
+    double x_left,
+    double x_right) {
+    const double low_left = edge_y_at(edges[interval.low_edge_index], x_left);
+    const double low_right = edge_y_at(edges[interval.low_edge_index], x_right);
+    const double high_left = edge_y_at(edges[interval.high_edge_index], x_left);
+    const double high_right = edge_y_at(edges[interval.high_edge_index], x_right);
+    const double height_sum = (high_left - low_left) + (high_right - low_right);
+    const double area = (x_right - x_left) * height_sum * 0.5;
+    return area > 0.0 ? area : 0.0;
+}
+
+__device__ double interval_difference_area(
+    const PolygonSweepEdge* edges,
+    const PolygonSweepInterval* keep,
+    int keep_count,
+    const PolygonSweepInterval* cut,
+    int cut_count,
+    double x_left,
+    double x_right,
+    double x_mid) {
+    double area = 0.0;
+    for (int i = 0; i < keep_count; ++i) {
+        double cursor_y = keep[i].low_y;
+        int cursor_edge = keep[i].low_edge_index;
+        for (int j = 0; j < cut_count; ++j) {
+            if (cut[j].high_y <= cursor_y + 1e-9 || cut[j].low_y >= keep[i].high_y - 1e-9) {
+                continue;
+            }
+            if (cut[j].low_y > cursor_y + 1e-9) {
+                PolygonSweepInterval piece{cursor_y, fmin(cut[j].low_y, keep[i].high_y), cursor_edge, cut[j].low_edge_index};
+                area += interval_area(edges, piece, x_left, x_right);
+            }
+            if (cut[j].high_y > cursor_y) {
+                cursor_y = fmax(cursor_y, cut[j].high_y);
+                cursor_edge = cut[j].high_edge_index;
+            }
+            if (cursor_y >= keep[i].high_y - 1e-9) {
+                break;
+            }
+        }
+        if (cursor_y < keep[i].high_y - 1e-9) {
+            PolygonSweepInterval piece{cursor_y, keep[i].high_y, cursor_edge, keep[i].high_edge_index};
+            area += interval_area(edges, piece, x_left, x_right);
+        }
+    }
+    return area;
+}
+
+__device__ bool emit_interval_fragment(
+    const PolygonSweepEdge* edges,
+    const PolygonSweepInterval& interval,
+    double x_left,
+    double x_right,
+    std::int64_t* out_quads,
+    std::int64_t* out_fragment_twice_areas,
+    std::uint16_t* out_count,
+    std::int64_t* out_twice_area,
+    std::uint16_t max_fragments) {
+    const double low_left = edge_y_at(edges[interval.low_edge_index], x_left);
+    const double low_right = edge_y_at(edges[interval.low_edge_index], x_right);
+    const double high_left = edge_y_at(edges[interval.high_edge_index], x_left);
+    const double high_right = edge_y_at(edges[interval.high_edge_index], x_right);
+    const double height_sum = (high_left - low_left) + (high_right - low_right);
+    const double area = (x_right - x_left) * height_sum * 0.5;
+    if (area <= 1e-9) {
+        return true;
+    }
+    if (*out_count >= max_fragments) {
+        return false;
+    }
+    const std::uint16_t index = (*out_count)++;
+    const auto fragment_twice_area = static_cast<std::int64_t>(llround(area * 2.0));
+    std::int64_t* quad = out_quads + static_cast<std::uint64_t>(index) * 8;
+    quad[0] = static_cast<std::int64_t>(llround(x_left));
+    quad[1] = static_cast<std::int64_t>(llround(low_left));
+    quad[2] = static_cast<std::int64_t>(llround(x_right));
+    quad[3] = static_cast<std::int64_t>(llround(low_right));
+    quad[4] = static_cast<std::int64_t>(llround(x_right));
+    quad[5] = static_cast<std::int64_t>(llround(high_right));
+    quad[6] = static_cast<std::int64_t>(llround(x_left));
+    quad[7] = static_cast<std::int64_t>(llround(high_left));
+    out_fragment_twice_areas[index] = fragment_twice_area;
+    *out_twice_area += fragment_twice_area;
+    return true;
+}
+
+__device__ bool emit_interval_difference_fragments(
+    const PolygonSweepEdge* edges,
+    const PolygonSweepInterval* keep,
+    int keep_count,
+    const PolygonSweepInterval* cut,
+    int cut_count,
+    double x_left,
+    double x_right,
+    std::int64_t* out_quads,
+    std::int64_t* out_fragment_twice_areas,
+    std::uint16_t* out_count,
+    std::int64_t* out_twice_area,
+    std::uint16_t max_fragments) {
+    for (int i = 0; i < keep_count; ++i) {
+        double cursor_y = keep[i].low_y;
+        int cursor_edge = keep[i].low_edge_index;
+        for (int j = 0; j < cut_count; ++j) {
+            if (cut[j].high_y <= cursor_y + 1e-9 || cut[j].low_y >= keep[i].high_y - 1e-9) {
+                continue;
+            }
+            if (cut[j].low_y > cursor_y + 1e-9) {
+                PolygonSweepInterval piece{cursor_y, fmin(cut[j].low_y, keep[i].high_y), cursor_edge, cut[j].low_edge_index};
+                if (!emit_interval_fragment(edges, piece, x_left, x_right, out_quads, out_fragment_twice_areas, out_count, out_twice_area, max_fragments)) {
+                    return false;
+                }
+            }
+            if (cut[j].high_y > cursor_y) {
+                cursor_y = fmax(cursor_y, cut[j].high_y);
+                cursor_edge = cut[j].high_edge_index;
+            }
+            if (cursor_y >= keep[i].high_y - 1e-9) {
+                break;
+            }
+        }
+        if (cursor_y < keep[i].high_y - 1e-9) {
+            PolygonSweepInterval piece{cursor_y, keep[i].high_y, cursor_edge, keep[i].high_edge_index};
+            if (!emit_interval_fragment(edges, piece, x_left, x_right, out_quads, out_fragment_twice_areas, out_count, out_twice_area, max_fragments)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+__global__ void polygon_component_area_kernel(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::uint8_t* polygon_sides,
+    const std::uint64_t* component_offsets,
+    std::uint64_t component_count,
+    std::int64_t* out_twice_areas,
+    std::uint32_t* out_errors) {
+    const std::uint64_t component_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (component_index >= component_count) {
+        return;
+    }
+    PolygonSweepEdge edges[kMaxPolygonComponentEdges];
+    double breaks[kMaxPolygonComponentBreaks];
+    PolygonSweepCrossing crossings[kMaxPolygonComponentIntervals];
+    PolygonSweepInterval old_intervals[kMaxPolygonComponentIntervals];
+    PolygonSweepInterval new_intervals[kMaxPolygonComponentIntervals];
+    int edge_count = 0;
+    int break_count = 0;
+
+    const std::uint64_t polygon_start = component_offsets[component_index];
+    const std::uint64_t polygon_stop = component_offsets[component_index + 1];
+    for (std::uint64_t polygon_index = polygon_start; polygon_index < polygon_stop; ++polygon_index) {
+        const int polygon_slot = static_cast<int>(polygon_index - polygon_start);
+        const std::uint64_t vertex_start = polygon_offsets[polygon_index];
+        const std::uint64_t vertex_stop = polygon_offsets[polygon_index + 1];
+        const std::uint64_t vertex_count = vertex_stop - vertex_start;
+        if (vertex_count < 3) {
+            continue;
+        }
+        for (std::uint64_t local = 0; local < vertex_count; ++local) {
+            const std::uint64_t a = vertex_start + local;
+            const std::uint64_t b = vertex_start + ((local + 1) % vertex_count);
+            const double x0 = static_cast<double>(vertices_xy[a * 2 + 0]);
+            const double y0 = static_cast<double>(vertices_xy[a * 2 + 1]);
+            const double x1 = static_cast<double>(vertices_xy[b * 2 + 0]);
+            const double y1 = static_cast<double>(vertices_xy[b * 2 + 1]);
+            if (!add_breakpoint(breaks, &break_count, x0) || !add_breakpoint(breaks, &break_count, x1)) {
+                out_errors[component_index] = 1;
+                return;
+            }
+            if (fabs(x1 - x0) <= 1e-12) {
+                continue;
+            }
+            if (edge_count >= kMaxPolygonComponentEdges) {
+                out_errors[component_index] = 2;
+                return;
+            }
+            edges[edge_count++] = PolygonSweepEdge{x0, y0, x1, y1, polygon_sides[polygon_index], polygon_slot};
+        }
+    }
+    for (int i = 0; i < edge_count; ++i) {
+        for (int j = i + 1; j < edge_count; ++j) {
+            double x = 0.0;
+            if (edge_intersection_x(edges[i], edges[j], &x)) {
+                const double min_x = fmax(fmin(edges[i].x0, edges[i].x1), fmin(edges[j].x0, edges[j].x1));
+                const double max_x = fmin(fmax(edges[i].x0, edges[i].x1), fmax(edges[j].x0, edges[j].x1));
+                if (x > min_x + 1e-7 && x < max_x - 1e-7 && !add_breakpoint(breaks, &break_count, x)) {
+                    out_errors[component_index] = 1;
+                    return;
+                }
+            }
+        }
+    }
+    sort_breakpoints(breaks, break_count);
+    double old_minus_new = 0.0;
+    double new_minus_old = 0.0;
+    for (int slab = 0; slab + 1 < break_count; ++slab) {
+        const double x_left = breaks[slab];
+        const double x_right = breaks[slab + 1];
+        if (x_right <= x_left + 1e-9) {
+            continue;
+        }
+        const double x_mid = (x_left + x_right) * 0.5;
+        int old_count = 0;
+        int new_count = 0;
+        const int component_polygon_count = static_cast<int>(polygon_stop - polygon_start);
+        if (!build_union_intervals(edges, edge_count, component_polygon_count, kOldSide, x_mid, crossings, old_intervals, &old_count)
+            || !build_union_intervals(edges, edge_count, component_polygon_count, kNewSide, x_mid, crossings, new_intervals, &new_count)) {
+            out_errors[component_index] = 3;
+            return;
+        }
+        old_minus_new += interval_difference_area(edges, old_intervals, old_count, new_intervals, new_count, x_left, x_right, x_mid);
+        new_minus_old += interval_difference_area(edges, new_intervals, new_count, old_intervals, old_count, x_left, x_right, x_mid);
+    }
+    const auto old_twice = static_cast<std::int64_t>(llround(old_minus_new * 2.0));
+    const auto new_twice = static_cast<std::int64_t>(llround(new_minus_old * 2.0));
+    out_twice_areas[component_index * 3 + 0] = old_twice;
+    out_twice_areas[component_index * 3 + 1] = new_twice;
+    out_twice_areas[component_index * 3 + 2] = old_twice + new_twice;
+    out_errors[component_index] = 0;
+}
+
+__global__ void polygon_component_fragment_kernel(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::uint8_t* polygon_sides,
+    const std::uint64_t* component_offsets,
+    std::uint64_t component_count,
+    std::uint16_t max_fragments,
+    std::int64_t* out_quads,
+    std::int64_t* out_fragment_twice_areas,
+    std::uint16_t* out_counts,
+    std::int64_t* out_twice_areas,
+    std::uint32_t* out_errors) {
+    const std::uint64_t component_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (component_index >= component_count) {
+        return;
+    }
+    PolygonSweepEdge edges[kMaxPolygonComponentEdges];
+    double breaks[kMaxPolygonComponentBreaks];
+    PolygonSweepCrossing crossings[kMaxPolygonComponentIntervals];
+    PolygonSweepInterval old_intervals[kMaxPolygonComponentIntervals];
+    PolygonSweepInterval new_intervals[kMaxPolygonComponentIntervals];
+    int edge_count = 0;
+    int break_count = 0;
+
+    const std::uint64_t polygon_start = component_offsets[component_index];
+    const std::uint64_t polygon_stop = component_offsets[component_index + 1];
+    for (std::uint64_t polygon_index = polygon_start; polygon_index < polygon_stop; ++polygon_index) {
+        const int polygon_slot = static_cast<int>(polygon_index - polygon_start);
+        const std::uint64_t vertex_start = polygon_offsets[polygon_index];
+        const std::uint64_t vertex_stop = polygon_offsets[polygon_index + 1];
+        const std::uint64_t vertex_count = vertex_stop - vertex_start;
+        if (vertex_count < 3) {
+            continue;
+        }
+        for (std::uint64_t local = 0; local < vertex_count; ++local) {
+            const std::uint64_t a = vertex_start + local;
+            const std::uint64_t b = vertex_start + ((local + 1) % vertex_count);
+            const double x0 = static_cast<double>(vertices_xy[a * 2 + 0]);
+            const double y0 = static_cast<double>(vertices_xy[a * 2 + 1]);
+            const double x1 = static_cast<double>(vertices_xy[b * 2 + 0]);
+            const double y1 = static_cast<double>(vertices_xy[b * 2 + 1]);
+            if (!add_breakpoint(breaks, &break_count, x0) || !add_breakpoint(breaks, &break_count, x1)) {
+                out_errors[component_index] = 1;
+                return;
+            }
+            if (fabs(x1 - x0) <= 1e-12) {
+                continue;
+            }
+            if (edge_count >= kMaxPolygonComponentEdges) {
+                out_errors[component_index] = 2;
+                return;
+            }
+            edges[edge_count++] = PolygonSweepEdge{x0, y0, x1, y1, polygon_sides[polygon_index], polygon_slot};
+        }
+    }
+    for (int i = 0; i < edge_count; ++i) {
+        for (int j = i + 1; j < edge_count; ++j) {
+            double x = 0.0;
+            if (edge_intersection_x(edges[i], edges[j], &x)) {
+                const double min_x = fmax(fmin(edges[i].x0, edges[i].x1), fmin(edges[j].x0, edges[j].x1));
+                const double max_x = fmin(fmax(edges[i].x0, edges[i].x1), fmax(edges[j].x0, edges[j].x1));
+                if (x > min_x + 1e-7 && x < max_x - 1e-7 && !add_breakpoint(breaks, &break_count, x)) {
+                    out_errors[component_index] = 1;
+                    return;
+                }
+            }
+        }
+    }
+    sort_breakpoints(breaks, break_count);
+    std::uint16_t old_count_out = 0;
+    std::uint16_t new_count_out = 0;
+    std::int64_t old_twice = 0;
+    std::int64_t new_twice = 0;
+    double old_area_total = 0.0;
+    double new_area_total = 0.0;
+    std::int64_t* old_quads = out_quads + component_index * 2 * static_cast<std::uint64_t>(max_fragments) * 8;
+    std::int64_t* new_quads = old_quads + static_cast<std::uint64_t>(max_fragments) * 8;
+    std::int64_t* old_fragment_areas = out_fragment_twice_areas + component_index * 2 * static_cast<std::uint64_t>(max_fragments);
+    std::int64_t* new_fragment_areas = old_fragment_areas + static_cast<std::uint64_t>(max_fragments);
+    for (int slab = 0; slab + 1 < break_count; ++slab) {
+        const double x_left = breaks[slab];
+        const double x_right = breaks[slab + 1];
+        if (x_right <= x_left + 1e-9) {
+            continue;
+        }
+        const double x_mid = (x_left + x_right) * 0.5;
+        int old_count = 0;
+        int new_count = 0;
+        const int component_polygon_count = static_cast<int>(polygon_stop - polygon_start);
+        if (!build_union_intervals(edges, edge_count, component_polygon_count, kOldSide, x_mid, crossings, old_intervals, &old_count)
+            || !build_union_intervals(edges, edge_count, component_polygon_count, kNewSide, x_mid, crossings, new_intervals, &new_count)) {
+            out_errors[component_index] = 3;
+            return;
+        }
+        old_area_total += interval_difference_area(edges, old_intervals, old_count, new_intervals, new_count, x_left, x_right, x_mid);
+        new_area_total += interval_difference_area(edges, new_intervals, new_count, old_intervals, old_count, x_left, x_right, x_mid);
+        if (!emit_interval_difference_fragments(
+                edges,
+                old_intervals,
+                old_count,
+                new_intervals,
+                new_count,
+                x_left,
+                x_right,
+                old_quads,
+                old_fragment_areas,
+                &old_count_out,
+                &old_twice,
+                max_fragments)
+            || !emit_interval_difference_fragments(
+                edges,
+                new_intervals,
+                new_count,
+                old_intervals,
+                old_count,
+                x_left,
+                x_right,
+                new_quads,
+                new_fragment_areas,
+                &new_count_out,
+                &new_twice,
+                max_fragments)) {
+            out_errors[component_index] = 4;
+            return;
+        }
+    }
+    old_twice = static_cast<std::int64_t>(llround(old_area_total * 2.0));
+    new_twice = static_cast<std::int64_t>(llround(new_area_total * 2.0));
+    out_counts[component_index * 2 + 0] = old_count_out;
+    out_counts[component_index * 2 + 1] = new_count_out;
+    out_twice_areas[component_index * 3 + 0] = old_twice;
+    out_twice_areas[component_index * 3 + 1] = new_twice;
+    out_twice_areas[component_index * 3 + 2] = old_twice + new_twice;
+    out_errors[component_index] = 0;
+}
+
+__device__ bool point_in_bbox_double(double x, double y, const std::int64_t* bbox) {
+    return x >= static_cast<double>(bbox[0]) && x <= static_cast<double>(bbox[2])
+        && y >= static_cast<double>(bbox[1]) && y <= static_cast<double>(bbox[3]);
+}
+
+__device__ bool point_in_polygon_double(
+    double x,
+    double y,
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    std::uint64_t polygon_index) {
+    const std::uint64_t start = polygon_offsets[polygon_index];
+    const std::uint64_t stop = polygon_offsets[polygon_index + 1];
+    const std::uint64_t vertex_count = stop - start;
+    if (vertex_count < 3) {
+        return false;
+    }
+    bool inside = false;
+    for (std::uint64_t local = 0; local < vertex_count; ++local) {
+        const std::uint64_t a = start + local;
+        const std::uint64_t b = start + ((local + 1) % vertex_count);
+        const double x0 = static_cast<double>(vertices_xy[a * 2 + 0]);
+        const double y0 = static_cast<double>(vertices_xy[a * 2 + 1]);
+        const double x1 = static_cast<double>(vertices_xy[b * 2 + 0]);
+        const double y1 = static_cast<double>(vertices_xy[b * 2 + 1]);
+        if ((y0 > y) != (y1 > y)) {
+            const double x_intersection = x0 + (y - y0) * (x1 - x0) / (y1 - y0);
+            if (x_intersection > x) {
+                inside = !inside;
+            }
+        }
+    }
+    return inside;
+}
+
+__device__ bool union_contains_double(
+    double x,
+    double y,
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    std::uint64_t polygon_count) {
+    for (std::uint64_t polygon_index = 0; polygon_index < polygon_count; ++polygon_index) {
+        const std::int64_t* bbox = bboxes + polygon_index * 4;
+        if (point_in_bbox_double(x, y, bbox)
+            && point_in_polygon_double(x, y, vertices_xy, polygon_offsets, polygon_index)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+__device__ bool union_contains_side_double(
+    double x,
+    double y,
+    std::uint8_t side,
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    const std::uint8_t* polygon_sides,
+    std::uint64_t polygon_count) {
+    for (std::uint64_t polygon_index = 0; polygon_index < polygon_count; ++polygon_index) {
+        if (polygon_sides[polygon_index] != side) {
+            continue;
+        }
+        const std::int64_t* bbox = bboxes + polygon_index * 4;
+        if (point_in_bbox_double(x, y, bbox)
+            && point_in_polygon_double(x, y, vertices_xy, polygon_offsets, polygon_index)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+__device__ bool directional_target_contains_double(
+    double x,
+    double y,
+    std::uint8_t direction,
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    const std::uint8_t* polygon_sides,
+    std::uint64_t polygon_count) {
+    const bool old_inside = union_contains_side_double(x, y, kOldSide, vertices_xy, polygon_offsets, bboxes, polygon_sides, polygon_count);
+    const bool new_inside = union_contains_side_double(x, y, kNewSide, vertices_xy, polygon_offsets, bboxes, polygon_sides, polygon_count);
+    if (direction == kOldSide) {
+        return old_inside && !new_inside;
+    }
+    return new_inside && !old_inside;
+}
+
+__global__ void mixed_boundary_edge_kernel(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    const std::uint8_t* polygon_sides,
+    std::uint64_t polygon_count,
+    const double* segment_points,
+    std::uint64_t segment_count,
+    std::uint8_t direction,
+    double* out_edges,
+    std::uint8_t* out_keep) {
+    const std::uint64_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= segment_count) {
+        return;
+    }
+    out_keep[index] = 0;
+    const double x0 = segment_points[index * 4 + 0];
+    const double y0 = segment_points[index * 4 + 1];
+    const double x1 = segment_points[index * 4 + 2];
+    const double y1 = segment_points[index * 4 + 3];
+    const double dx = x1 - x0;
+    const double dy = y1 - y0;
+    const double length = sqrt(dx * dx + dy * dy);
+    if (length <= 1e-12) {
+        return;
+    }
+    const double normal_x = -dy / length;
+    const double normal_y = dx / length;
+    const double mid_x = (x0 + x1) * 0.5;
+    const double mid_y = (y0 + y1) * 0.5;
+    const bool left_inside = directional_target_contains_double(
+        mid_x + normal_x * 1e-5,
+        mid_y + normal_y * 1e-5,
+        direction,
+        vertices_xy,
+        polygon_offsets,
+        bboxes,
+        polygon_sides,
+        polygon_count);
+    const bool right_inside = directional_target_contains_double(
+        mid_x - normal_x * 1e-5,
+        mid_y - normal_y * 1e-5,
+        direction,
+        vertices_xy,
+        polygon_offsets,
+        bboxes,
+        polygon_sides,
+        polygon_count);
+    if (left_inside && !right_inside) {
+        out_edges[index * 4 + 0] = x0;
+        out_edges[index * 4 + 1] = y0;
+        out_edges[index * 4 + 2] = x1;
+        out_edges[index * 4 + 3] = y1;
+        out_keep[index] = 1;
+    } else if (right_inside && !left_inside) {
+        out_edges[index * 4 + 0] = x1;
+        out_edges[index * 4 + 1] = y1;
+        out_edges[index * 4 + 2] = x0;
+        out_edges[index * 4 + 3] = y0;
+        out_keep[index] = 1;
+    }
+}
+
+__global__ void one_sided_boundary_edge_kernel(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    const std::int64_t* signed_twice_areas,
+    std::uint64_t polygon_count,
+    const double* segment_points,
+    const std::uint32_t* segment_polygon_indices,
+    std::uint64_t segment_count,
+    double* out_edges,
+    std::uint8_t* out_keep) {
+    const std::uint64_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= segment_count) {
+        return;
+    }
+    out_keep[index] = 0;
+    const auto polygon_index = static_cast<std::uint64_t>(segment_polygon_indices[index]);
+    if (polygon_index >= polygon_count) {
+        return;
+    }
+    const std::int64_t signed_area = signed_twice_areas[polygon_index];
+    if (signed_area == 0) {
+        return;
+    }
+    const double x0 = segment_points[index * 4 + 0];
+    const double y0 = segment_points[index * 4 + 1];
+    const double x1 = segment_points[index * 4 + 2];
+    const double y1 = segment_points[index * 4 + 3];
+    const double dx = x1 - x0;
+    const double dy = y1 - y0;
+    const double length = sqrt(dx * dx + dy * dy);
+    if (length <= 1e-12) {
+        return;
+    }
+    const double normal_x = -dy / length;
+    const double normal_y = dx / length;
+    const double mid_x = (x0 + x1) * 0.5;
+    const double mid_y = (y0 + y1) * 0.5;
+    const double sample_x = signed_area > 0 ? mid_x - normal_x * 1e-5 : mid_x + normal_x * 1e-5;
+    const double sample_y = signed_area > 0 ? mid_y - normal_y * 1e-5 : mid_y + normal_y * 1e-5;
+    if (union_contains_double(sample_x, sample_y, vertices_xy, polygon_offsets, bboxes, polygon_count)) {
+        return;
+    }
+    if (signed_area > 0) {
+        out_edges[index * 4 + 0] = x0;
+        out_edges[index * 4 + 1] = y0;
+        out_edges[index * 4 + 2] = x1;
+        out_edges[index * 4 + 3] = y1;
+    } else {
+        out_edges[index * 4 + 0] = x1;
+        out_edges[index * 4 + 1] = y1;
+        out_edges[index * 4 + 2] = x0;
+        out_edges[index * 4 + 3] = y0;
+    }
+    out_keep[index] = 1;
+}
+
+__device__ bool nearly_equal_double(double left, double right) {
+    return fabs(left - right) <= 1e-9;
+}
+
+__device__ bool point_equal_double(double ax, double ay, double bx, double by) {
+    return nearly_equal_double(ax, bx) && nearly_equal_double(ay, by);
+}
+
+__device__ bool strict_between_zero_one(double value) {
+    return value > 1e-9 && value < 1.0 - 1e-9;
+}
+
+__device__ bool segment_pairs_require_split(const double* left, const double* right) {
+    const double ax0 = left[0];
+    const double ay0 = left[1];
+    const double ax1 = left[2];
+    const double ay1 = left[3];
+    const double bx0 = right[0];
+    const double by0 = right[1];
+    const double bx1 = right[2];
+    const double by1 = right[3];
+    if (fmax(fmin(ax0, ax1), fmin(bx0, bx1)) > fmin(fmax(ax0, ax1), fmax(bx0, bx1)) + 1e-9
+        || fmax(fmin(ay0, ay1), fmin(by0, by1)) > fmin(fmax(ay0, ay1), fmax(by0, by1)) + 1e-9) {
+        return false;
+    }
+    const double adx = ax1 - ax0;
+    const double ady = ay1 - ay0;
+    const double bdx = bx1 - bx0;
+    const double bdy = by1 - by0;
+    const double denom = adx * bdy - ady * bdx;
+    const double cx = bx0 - ax0;
+    const double cy = by0 - ay0;
+    if (fabs(denom) <= 1e-12) {
+        if (fabs(cx * ady - cy * adx) > 1e-6) {
+            return false;
+        }
+        const double alen2 = adx * adx + ady * ady;
+        const double blen2 = bdx * bdx + bdy * bdy;
+        if (alen2 <= 1e-12 || blen2 <= 1e-12) {
+            return false;
+        }
+        const double bt0 = ((bx0 - ax0) * adx + (by0 - ay0) * ady) / alen2;
+        const double bt1 = ((bx1 - ax0) * adx + (by1 - ay0) * ady) / alen2;
+        const double at0 = ((ax0 - bx0) * bdx + (ay0 - by0) * bdy) / blen2;
+        const double at1 = ((ax1 - bx0) * bdx + (ay1 - by0) * bdy) / blen2;
+        return strict_between_zero_one(bt0) || strict_between_zero_one(bt1)
+            || strict_between_zero_one(at0) || strict_between_zero_one(at1);
+    }
+    const double t = (cx * bdy - cy * bdx) / denom;
+    const double u = (cx * ady - cy * adx) / denom;
+    if (t < -1e-9 || t > 1.0 + 1e-9 || u < -1e-9 || u > 1.0 + 1e-9) {
+        return false;
+    }
+    const bool a_interior = strict_between_zero_one(t);
+    const bool b_interior = strict_between_zero_one(u);
+    if (a_interior || b_interior) {
+        return true;
+    }
+    const double ix_a = ax0 + t * adx;
+    const double iy_a = ay0 + t * ady;
+    return !(point_equal_double(ix_a, iy_a, ax0, ay0)
+             || point_equal_double(ix_a, iy_a, ax1, ay1))
+        || !(point_equal_double(ix_a, iy_a, bx0, by0)
+             || point_equal_double(ix_a, iy_a, bx1, by1));
+}
+
+__global__ void one_sided_split_required_kernel(
+    const double* segment_points,
+    std::uint64_t segment_count,
+    std::uint32_t* split_required) {
+    const std::uint64_t left_index = blockIdx.x * blockDim.x + threadIdx.x;
+    const std::uint64_t right_index = blockIdx.y * blockDim.y + threadIdx.y;
+    if (left_index >= segment_count || right_index >= segment_count || right_index <= left_index || *split_required) {
+        return;
+    }
+    if (segment_pairs_require_split(segment_points + left_index * 4, segment_points + right_index * 4)) {
+        atomicExch(split_required, 1u);
     }
 }
 
@@ -547,6 +1624,386 @@ __global__ void rect_set_exact_fragments_kernel(
     out_twice_areas[index * 3 + 2] = old_area + new_area;
 }
 
+struct DeviceLoopTraceStats {
+    std::uint64_t fragment_count;
+    std::uint64_t vertex_count;
+    std::uint64_t dropped_zero_area_loop_count;
+    std::uint32_t error;
+};
+
+__device__ bool loop_point_equal(const std::int64_t* points, std::uint64_t left, std::uint64_t right) {
+    return points[left * 2] == points[right * 2] && points[left * 2 + 1] == points[right * 2 + 1];
+}
+
+__device__ bool loop_edge_less(const std::int64_t* edges, std::uint64_t left, std::uint64_t right) {
+    for (int axis = 0; axis < 4; ++axis) {
+        const auto left_value = edges[left * 4 + axis];
+        const auto right_value = edges[right * 4 + axis];
+        if (left_value != right_value) {
+            return left_value < right_value;
+        }
+    }
+    return false;
+}
+
+__device__ bool loop_point_less_xy(std::int64_t ax, std::int64_t ay, std::int64_t bx, std::int64_t by) {
+    return ax < bx || (ax == bx && ay < by);
+}
+
+__device__ bool loop_edge_start_matches(const std::int64_t* edges, std::uint64_t edge_index, std::int64_t x, std::int64_t y) {
+    return edges[edge_index * 4] == x && edges[edge_index * 4 + 1] == y;
+}
+
+__device__ bool loop_edge_stop_matches(const std::int64_t* edges, std::uint64_t edge_index, std::int64_t x, std::int64_t y) {
+    return edges[edge_index * 4 + 2] == x && edges[edge_index * 4 + 3] == y;
+}
+
+__device__ bool loop_collinear(std::int64_t ax, std::int64_t ay, std::int64_t bx, std::int64_t by, std::int64_t cx, std::int64_t cy) {
+    const long long left = static_cast<long long>(bx - ax) * static_cast<long long>(cy - by);
+    const long long right = static_cast<long long>(by - ay) * static_cast<long long>(cx - bx);
+    return left == right;
+}
+
+__device__ void loop_turn_key(
+    std::int64_t px,
+    std::int64_t py,
+    std::int64_t cx,
+    std::int64_t cy,
+    std::int64_t nx,
+    std::int64_t ny,
+    int* turn_class,
+    unsigned long long* abs_cross,
+    long long* dot) {
+    const long long in_x = static_cast<long long>(cx - px);
+    const long long in_y = static_cast<long long>(cy - py);
+    const long long out_x = static_cast<long long>(nx - cx);
+    const long long out_y = static_cast<long long>(ny - cy);
+    const long long cross = in_x * out_y - in_y * out_x;
+    *dot = in_x * out_x + in_y * out_y;
+    if (cross < 0) {
+        *turn_class = 0;
+        *abs_cross = static_cast<unsigned long long>(-cross);
+    } else if (cross == 0 && *dot > 0) {
+        *turn_class = 1;
+        *abs_cross = 0;
+    } else if (cross > 0) {
+        *turn_class = 2;
+        *abs_cross = static_cast<unsigned long long>(cross);
+    } else {
+        *turn_class = 3;
+        *abs_cross = 0;
+    }
+}
+
+__device__ bool loop_candidate_better(
+    std::int64_t px,
+    std::int64_t py,
+    std::int64_t cx,
+    std::int64_t cy,
+    std::int64_t candidate_x,
+    std::int64_t candidate_y,
+    std::int64_t best_x,
+    std::int64_t best_y) {
+    int candidate_class = 0;
+    int best_class = 0;
+    unsigned long long candidate_abs_cross = 0;
+    unsigned long long best_abs_cross = 0;
+    long long candidate_dot = 0;
+    long long best_dot = 0;
+    loop_turn_key(px, py, cx, cy, candidate_x, candidate_y, &candidate_class, &candidate_abs_cross, &candidate_dot);
+    loop_turn_key(px, py, cx, cy, best_x, best_y, &best_class, &best_abs_cross, &best_dot);
+    if (candidate_class != best_class) {
+        return candidate_class < best_class;
+    }
+    if (candidate_abs_cross != best_abs_cross) {
+        return candidate_abs_cross > best_abs_cross;
+    }
+    if (candidate_dot != best_dot) {
+        return candidate_dot > best_dot;
+    }
+    return loop_point_less_xy(candidate_x, candidate_y, best_x, best_y);
+}
+
+__device__ std::uint64_t loop_clean_duplicates(
+    const std::int64_t* input_points,
+    std::uint64_t input_count,
+    std::int64_t* output_points) {
+    std::uint64_t out_count = 0;
+    for (std::uint64_t index = 0; index < input_count; ++index) {
+        const auto x = input_points[index * 2];
+        const auto y = input_points[index * 2 + 1];
+        if (out_count == 0 || output_points[(out_count - 1) * 2] != x || output_points[(out_count - 1) * 2 + 1] != y) {
+            output_points[out_count * 2] = x;
+            output_points[out_count * 2 + 1] = y;
+            ++out_count;
+        }
+    }
+    if (out_count > 1 && output_points[0] == output_points[(out_count - 1) * 2] && output_points[1] == output_points[(out_count - 1) * 2 + 1]) {
+        --out_count;
+    }
+    return out_count;
+}
+
+__device__ std::uint64_t loop_clean_collinear_once(
+    const std::int64_t* input_points,
+    std::uint64_t input_count,
+    std::int64_t* output_points,
+    bool* changed) {
+    *changed = false;
+    if (input_count < 3) {
+        for (std::uint64_t index = 0; index < input_count; ++index) {
+            output_points[index * 2] = input_points[index * 2];
+            output_points[index * 2 + 1] = input_points[index * 2 + 1];
+        }
+        return input_count;
+    }
+    std::uint64_t out_count = 0;
+    for (std::uint64_t index = 0; index < input_count; ++index) {
+        const std::uint64_t previous = (index + input_count - 1) % input_count;
+        const std::uint64_t following = (index + 1) % input_count;
+        const auto ax = input_points[previous * 2];
+        const auto ay = input_points[previous * 2 + 1];
+        const auto bx = input_points[index * 2];
+        const auto by = input_points[index * 2 + 1];
+        const auto cx = input_points[following * 2];
+        const auto cy = input_points[following * 2 + 1];
+        if (loop_collinear(ax, ay, bx, by, cx, cy)) {
+            *changed = true;
+            continue;
+        }
+        output_points[out_count * 2] = bx;
+        output_points[out_count * 2 + 1] = by;
+        ++out_count;
+    }
+    return out_count;
+}
+
+__device__ long long loop_twice_area(const std::int64_t* points, std::uint64_t count) {
+    long long area = 0;
+    for (std::uint64_t index = 0; index < count; ++index) {
+        const auto next = (index + 1) % count;
+        area += static_cast<long long>(points[index * 2]) * static_cast<long long>(points[next * 2 + 1])
+            - static_cast<long long>(points[next * 2]) * static_cast<long long>(points[index * 2 + 1]);
+    }
+    return area;
+}
+
+__global__ void boundary_loop_next_kernel(
+    const std::int64_t* edges,
+    std::uint64_t edge_count,
+    std::uint64_t* next_indices) {
+    const std::uint64_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= edge_count) {
+        return;
+    }
+    const auto previous_x = edges[index * 4];
+    const auto previous_y = edges[index * 4 + 1];
+    const auto current_x = edges[index * 4 + 2];
+    const auto current_y = edges[index * 4 + 3];
+    bool have_best = false;
+    std::uint64_t best_edge = UINT64_MAX;
+    std::int64_t best_x = 0;
+    std::int64_t best_y = 0;
+    for (std::uint64_t candidate = 0; candidate < edge_count; ++candidate) {
+        if (!loop_edge_start_matches(edges, candidate, current_x, current_y)) {
+            continue;
+        }
+        const auto candidate_x = edges[candidate * 4 + 2];
+        const auto candidate_y = edges[candidate * 4 + 3];
+        if (!have_best || loop_candidate_better(previous_x, previous_y, current_x, current_y, candidate_x, candidate_y, best_x, best_y)) {
+            best_edge = candidate;
+            best_x = candidate_x;
+            best_y = candidate_y;
+            have_best = true;
+        }
+    }
+    next_indices[index] = have_best ? best_edge : UINT64_MAX;
+}
+
+__global__ void boundary_loop_trace_kernel(
+    const std::int64_t* edges,
+    std::uint64_t edge_count,
+    const std::uint64_t* next_indices,
+    std::uint8_t* remaining,
+    std::int64_t* scratch_a,
+    std::int64_t* scratch_b,
+    std::int64_t* out_vertices,
+    std::uint64_t* out_offsets,
+    std::int64_t* out_bboxes,
+    std::int64_t* out_twice_areas,
+    DeviceLoopTraceStats* stats) {
+    if (blockIdx.x != 0 || threadIdx.x != 0) {
+        return;
+    }
+    stats->fragment_count = 0;
+    stats->vertex_count = 0;
+    stats->dropped_zero_area_loop_count = 0;
+    stats->error = 0;
+    out_offsets[0] = 0;
+
+    while (true) {
+        bool found_seed = false;
+        std::uint64_t seed = 0;
+        for (std::uint64_t index = 0; index < edge_count; ++index) {
+            if (!remaining[index]) {
+                continue;
+            }
+            if (!found_seed || loop_edge_less(edges, index, seed)) {
+                seed = index;
+                found_seed = true;
+            }
+        }
+        if (!found_seed) {
+            break;
+        }
+
+        remaining[seed] = 0;
+        const auto start_x = edges[seed * 4];
+        const auto start_y = edges[seed * 4 + 1];
+        std::int64_t previous_x = start_x;
+        std::int64_t previous_y = start_y;
+        std::int64_t current_x = edges[seed * 4 + 2];
+        std::int64_t current_y = edges[seed * 4 + 3];
+        std::uint64_t current_edge = seed;
+        std::uint64_t raw_count = 0;
+        scratch_a[raw_count * 2] = start_x;
+        scratch_a[raw_count * 2 + 1] = start_y;
+        ++raw_count;
+        scratch_a[raw_count * 2] = current_x;
+        scratch_a[raw_count * 2 + 1] = current_y;
+        ++raw_count;
+
+        while (!(current_x == start_x && current_y == start_y)) {
+            const std::uint64_t best_edge = next_indices[current_edge];
+            if (best_edge == UINT64_MAX || !remaining[best_edge]) {
+                break;
+            }
+            const auto best_x = edges[best_edge * 4 + 2];
+            const auto best_y = edges[best_edge * 4 + 3];
+            remaining[best_edge] = 0;
+            if (!(best_x == start_x && best_y == start_y)) {
+                if (raw_count >= edge_count) {
+                    stats->error = 1;
+                    return;
+                }
+                scratch_a[raw_count * 2] = best_x;
+                scratch_a[raw_count * 2 + 1] = best_y;
+                ++raw_count;
+            }
+            previous_x = current_x;
+            previous_y = current_y;
+            current_x = best_x;
+            current_y = best_y;
+            current_edge = best_edge;
+        }
+
+        std::uint64_t clean_count = loop_clean_duplicates(scratch_a, raw_count, scratch_b);
+        bool changed = true;
+        bool scratch_b_current = true;
+        while (changed && clean_count >= 3) {
+            changed = false;
+            if (scratch_b_current) {
+                clean_count = loop_clean_collinear_once(scratch_b, clean_count, scratch_a, &changed);
+                scratch_b_current = false;
+            } else {
+                clean_count = loop_clean_collinear_once(scratch_a, clean_count, scratch_b, &changed);
+                scratch_b_current = true;
+            }
+        }
+        const std::int64_t* clean_points = scratch_b_current ? scratch_b : scratch_a;
+        if (clean_count < 3) {
+            ++stats->dropped_zero_area_loop_count;
+            continue;
+        }
+        const auto area = loop_twice_area(clean_points, clean_count);
+        if (area == 0) {
+            ++stats->dropped_zero_area_loop_count;
+            continue;
+        }
+        const std::uint64_t fragment_index = stats->fragment_count;
+        if (fragment_index >= edge_count || stats->vertex_count + clean_count > edge_count) {
+            stats->error = 2;
+            return;
+        }
+        std::int64_t x0 = clean_points[0];
+        std::int64_t y0 = clean_points[1];
+        std::int64_t x1 = clean_points[0];
+        std::int64_t y1 = clean_points[1];
+        for (std::uint64_t index = 0; index < clean_count; ++index) {
+            const auto x = clean_points[index * 2];
+            const auto y = clean_points[index * 2 + 1];
+            out_vertices[(stats->vertex_count + index) * 2] = x;
+            out_vertices[(stats->vertex_count + index) * 2 + 1] = y;
+            x0 = min(x0, x);
+            y0 = min(y0, y);
+            x1 = max(x1, x);
+            y1 = max(y1, y);
+        }
+        out_bboxes[fragment_index * 4] = x0;
+        out_bboxes[fragment_index * 4 + 1] = y0;
+        out_bboxes[fragment_index * 4 + 2] = x1;
+        out_bboxes[fragment_index * 4 + 3] = y1;
+        out_twice_areas[fragment_index] = area;
+        stats->vertex_count += clean_count;
+        ++stats->fragment_count;
+        out_offsets[stats->fragment_count] = stats->vertex_count;
+    }
+}
+
+__global__ void context_overlap_flag_kernel(
+    const std::int64_t* component_bboxes,
+    const std::int32_t* component_layers,
+    const std::int32_t* component_datatypes,
+    std::uint64_t component_count,
+    const std::int64_t* polygon_bboxes,
+    const std::int32_t* polygon_layers,
+    const std::int32_t* polygon_datatypes,
+    std::uint64_t polygon_count,
+    std::uint64_t total_pairs,
+    std::uint64_t* flags) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t linear = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         linear < total_pairs;
+         linear += stride) {
+        const std::uint64_t component_index = linear / polygon_count;
+        const std::uint64_t polygon_index = linear - component_index * polygon_count;
+        const auto cx0 = component_bboxes[component_index * 4];
+        const auto cy0 = component_bboxes[component_index * 4 + 1];
+        const auto cx1 = component_bboxes[component_index * 4 + 2];
+        const auto cy1 = component_bboxes[component_index * 4 + 3];
+        const auto px0 = polygon_bboxes[polygon_index * 4];
+        const auto py0 = polygon_bboxes[polygon_index * 4 + 1];
+        const auto px1 = polygon_bboxes[polygon_index * 4 + 2];
+        const auto py1 = polygon_bboxes[polygon_index * 4 + 3];
+        const bool same_layer = component_layers[component_index] == polygon_layers[polygon_index]
+            && component_datatypes[component_index] == polygon_datatypes[polygon_index];
+        const bool overlaps = px1 > cx0 && cx1 > px0 && max(py0, cy0) < min(py1, cy1);
+        flags[linear] = same_layer && overlaps ? 1 : 0;
+    }
+}
+
+__global__ void context_overlap_emit_kernel(
+    const std::uint64_t* flags,
+    const std::uint64_t* offsets,
+    std::uint64_t polygon_count,
+    std::uint64_t total_pairs,
+    std::uint64_t* out_component_indices,
+    std::uint64_t* out_polygon_indices) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t linear = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         linear < total_pairs;
+         linear += stride) {
+        if (!flags[linear]) {
+            continue;
+        }
+        const std::uint64_t component_index = linear / polygon_count;
+        const std::uint64_t polygon_index = linear - component_index * polygon_count;
+        const std::uint64_t out_index = offsets[linear];
+        out_component_indices[out_index] = component_index;
+        out_polygon_indices[out_index] = polygon_index;
+    }
+}
+
 void check_cuda(cudaError_t status, const char* action) {
     if (status != cudaSuccess) {
         throw std::runtime_error(std::string(action) + ": " + cudaGetErrorString(status));
@@ -703,8 +2160,62 @@ struct GdsCudaByteCompareResult {
     std::uint8_t same;
 };
 
+struct GdsCudaPolygonRecordDeltaResult {
+    std::uint64_t record_count;
+    std::int32_t* layers;
+    std::int32_t* datatypes;
+    std::uint8_t* directions;
+    std::uint64_t* counts;
+    std::int64_t* bboxes;
+    std::uint64_t* vertex_counts;
+    std::uint32_t* flags;
+    std::uint64_t* hashes;
+    std::uint64_t* representative_indices;
+    std::uint64_t old_input_count;
+    std::uint64_t new_input_count;
+    std::uint64_t matched_record_count;
+    std::uint64_t reduced_key_count;
+    std::uint64_t cuda_kernel_count;
+    float cuda_event_elapsed_ms;
+};
+
+struct GdsCudaBoundaryLoopResult {
+    std::uint64_t fragment_count;
+    std::uint64_t vertex_count;
+    std::int64_t* vertices_xy;
+    std::uint64_t* fragment_offsets;
+    std::int64_t* bboxes;
+    std::int64_t* twice_areas;
+    std::uint64_t dropped_zero_area_loop_count;
+    std::uint64_t cuda_kernel_count;
+    float cuda_event_elapsed_ms;
+};
+
+struct GdsCudaContextOverlapPairsResult {
+    std::uint64_t pair_count;
+    std::uint64_t* component_indices;
+    std::uint64_t* polygon_indices;
+    std::uint64_t cuda_kernel_count;
+    float cuda_event_elapsed_ms;
+};
+
 const char* gds_cuda_last_error() {
     return g_last_error.c_str();
+}
+
+int gds_cuda_release_device_memory() {
+    const auto sync_status = cudaDeviceSynchronize();
+    if (sync_status != cudaSuccess && sync_status != cudaErrorCudartUnloading) {
+        g_last_error = std::string("cudaDeviceSynchronize before release: ") + cudaGetErrorString(sync_status);
+        return 1;
+    }
+    const auto reset_status = cudaDeviceReset();
+    if (reset_status != cudaSuccess && reset_status != cudaErrorCudartUnloading) {
+        g_last_error = std::string("cudaDeviceReset: ") + cudaGetErrorString(reset_status);
+        return 1;
+    }
+    g_last_error.clear();
+    return 0;
 }
 
 void gds_cuda_free_result(GdsCudaPrefilterResult* result) {
@@ -717,6 +2228,42 @@ void gds_cuda_free_result(GdsCudaPrefilterResult* result) {
     result->oversized = nullptr;
     result->candidate_count = 0;
     result->oversized_count = 0;
+}
+
+void gds_cuda_free_polygon_record_delta_result(GdsCudaPolygonRecordDeltaResult* result) {
+    if (!result) {
+        return;
+    }
+    std::free(result->layers);
+    std::free(result->datatypes);
+    std::free(result->directions);
+    std::free(result->counts);
+    std::free(result->bboxes);
+    std::free(result->vertex_counts);
+    std::free(result->flags);
+    std::free(result->hashes);
+    std::free(result->representative_indices);
+    *result = GdsCudaPolygonRecordDeltaResult{};
+}
+
+void gds_cuda_free_boundary_loop_result(GdsCudaBoundaryLoopResult* result) {
+    if (!result) {
+        return;
+    }
+    std::free(result->vertices_xy);
+    std::free(result->fragment_offsets);
+    std::free(result->bboxes);
+    std::free(result->twice_areas);
+    *result = GdsCudaBoundaryLoopResult{};
+}
+
+void gds_cuda_free_context_overlap_pairs_result(GdsCudaContextOverlapPairsResult* result) {
+    if (!result) {
+        return;
+    }
+    std::free(result->component_indices);
+    std::free(result->polygon_indices);
+    *result = GdsCudaContextOverlapPairsResult{};
 }
 
 int gds_cuda_compare_files(const char* old_path, const char* new_path, GdsCudaByteCompareResult* result) {
@@ -760,6 +2307,227 @@ int gds_cuda_compare_files(const char* old_path, const char* new_path, GdsCudaBy
         return 1;
     } catch (...) {
         g_last_error = "unknown CUDA byte compare error";
+        return 1;
+    }
+}
+
+int gds_cuda_polygon_record_delta(
+    const std::int64_t* old_vertices_xy,
+    std::uint64_t old_vertex_count,
+    const std::uint64_t* old_offsets,
+    const std::int32_t* old_layers,
+    const std::int32_t* old_datatypes,
+    const std::int64_t* old_bboxes,
+    const std::uint32_t* old_flags,
+    std::uint64_t old_count,
+    const std::int64_t* new_vertices_xy,
+    std::uint64_t new_vertex_count,
+    const std::uint64_t* new_offsets,
+    const std::int32_t* new_layers,
+    const std::int32_t* new_datatypes,
+    const std::int64_t* new_bboxes,
+    const std::uint32_t* new_flags,
+    std::uint64_t new_count,
+    GdsCudaPolygonRecordDeltaResult* result) {
+    cudaEvent_t event_start = nullptr;
+    cudaEvent_t event_stop = nullptr;
+    try {
+        if (!result) {
+            throw std::invalid_argument("polygon record delta result pointer is null");
+        }
+        *result = GdsCudaPolygonRecordDeltaResult{};
+        result->old_input_count = old_count;
+        result->new_input_count = new_count;
+        const std::uint64_t total_count = old_count + new_count;
+        if (total_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (total_count < old_count) {
+            throw std::overflow_error("polygon record count overflow");
+        }
+        if (old_count && (!old_offsets || !old_layers || !old_datatypes || !old_bboxes || !old_flags || (old_vertex_count && !old_vertices_xy))) {
+            throw std::invalid_argument("old polygon record delta input contains null pointer");
+        }
+        if (new_count && (!new_offsets || !new_layers || !new_datatypes || !new_bboxes || !new_flags || (new_vertex_count && !new_vertices_xy))) {
+            throw std::invalid_argument("new polygon record delta input contains null pointer");
+        }
+
+        check_cuda(cudaEventCreate(&event_start), "create polygon delta start event");
+        check_cuda(cudaEventCreate(&event_stop), "create polygon delta stop event");
+        check_cuda(cudaEventRecord(event_start), "record polygon delta start event");
+
+        DeviceBuffer<std::int64_t> d_old_vertices(old_vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_old_offsets(old_count ? old_count + 1 : 0);
+        DeviceBuffer<std::int32_t> d_old_layers(old_count);
+        DeviceBuffer<std::int32_t> d_old_datatypes(old_count);
+        DeviceBuffer<std::int64_t> d_old_bboxes(old_count * 4);
+        DeviceBuffer<std::uint32_t> d_old_flags(old_count);
+        DeviceBuffer<std::int64_t> d_new_vertices(new_vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_new_offsets(new_count ? new_count + 1 : 0);
+        DeviceBuffer<std::int32_t> d_new_layers(new_count);
+        DeviceBuffer<std::int32_t> d_new_datatypes(new_count);
+        DeviceBuffer<std::int64_t> d_new_bboxes(new_count * 4);
+        DeviceBuffer<std::uint32_t> d_new_flags(new_count);
+
+        if (old_count) {
+            if (old_vertex_count) {
+                check_cuda(cudaMemcpy(d_old_vertices.get(), old_vertices_xy, sizeof(std::int64_t) * old_vertex_count * 2, cudaMemcpyHostToDevice), "copy old polygon vertices");
+            }
+            check_cuda(cudaMemcpy(d_old_offsets.get(), old_offsets, sizeof(std::uint64_t) * (old_count + 1), cudaMemcpyHostToDevice), "copy old polygon offsets");
+            check_cuda(cudaMemcpy(d_old_layers.get(), old_layers, sizeof(std::int32_t) * old_count, cudaMemcpyHostToDevice), "copy old polygon layers");
+            check_cuda(cudaMemcpy(d_old_datatypes.get(), old_datatypes, sizeof(std::int32_t) * old_count, cudaMemcpyHostToDevice), "copy old polygon datatypes");
+            check_cuda(cudaMemcpy(d_old_bboxes.get(), old_bboxes, sizeof(std::int64_t) * old_count * 4, cudaMemcpyHostToDevice), "copy old polygon bboxes");
+            check_cuda(cudaMemcpy(d_old_flags.get(), old_flags, sizeof(std::uint32_t) * old_count, cudaMemcpyHostToDevice), "copy old polygon flags");
+        }
+        if (new_count) {
+            if (new_vertex_count) {
+                check_cuda(cudaMemcpy(d_new_vertices.get(), new_vertices_xy, sizeof(std::int64_t) * new_vertex_count * 2, cudaMemcpyHostToDevice), "copy new polygon vertices");
+            }
+            check_cuda(cudaMemcpy(d_new_offsets.get(), new_offsets, sizeof(std::uint64_t) * (new_count + 1), cudaMemcpyHostToDevice), "copy new polygon offsets");
+            check_cuda(cudaMemcpy(d_new_layers.get(), new_layers, sizeof(std::int32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon layers");
+            check_cuda(cudaMemcpy(d_new_datatypes.get(), new_datatypes, sizeof(std::int32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon datatypes");
+            check_cuda(cudaMemcpy(d_new_bboxes.get(), new_bboxes, sizeof(std::int64_t) * new_count * 4, cudaMemcpyHostToDevice), "copy new polygon bboxes");
+            check_cuda(cudaMemcpy(d_new_flags.get(), new_flags, sizeof(std::uint32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon flags");
+        }
+
+        thrust::device_vector<PolygonSideRecord> records(total_count);
+        const int threads = 256;
+        if (old_count) {
+            const int blocks = static_cast<int>((old_count + threads - 1) / threads);
+            polygon_record_key_kernel<<<blocks, threads>>>(
+                d_old_vertices.get(),
+                d_old_offsets.get(),
+                d_old_layers.get(),
+                d_old_datatypes.get(),
+                d_old_bboxes.get(),
+                d_old_flags.get(),
+                old_count,
+                kOldSide,
+                0,
+                thrust::raw_pointer_cast(records.data()));
+            check_cuda(cudaGetLastError(), "launch old polygon record key kernel");
+        }
+        if (new_count) {
+            const int blocks = static_cast<int>((new_count + threads - 1) / threads);
+            polygon_record_key_kernel<<<blocks, threads>>>(
+                d_new_vertices.get(),
+                d_new_offsets.get(),
+                d_new_layers.get(),
+                d_new_datatypes.get(),
+                d_new_bboxes.get(),
+                d_new_flags.get(),
+                new_count,
+                kNewSide,
+                old_count,
+                thrust::raw_pointer_cast(records.data()));
+            check_cuda(cudaGetLastError(), "launch new polygon record key kernel");
+        }
+        check_cuda(cudaDeviceSynchronize(), "run polygon record key kernels");
+        result->cuda_kernel_count = (old_count ? 1 : 0) + (new_count ? 1 : 0);
+
+        thrust::sort(records.begin(), records.end(), PolygonSideRecordLess{});
+        thrust::device_vector<PolygonRecordKey> keys(total_count);
+        thrust::device_vector<PolygonCountPair> pairs(total_count);
+        thrust::transform(records.begin(), records.end(), keys.begin(), PolygonRecordToKey{});
+        thrust::transform(records.begin(), records.end(), pairs.begin(), PolygonRecordToCountPair{});
+        thrust::device_vector<PolygonRecordKey> reduced_keys(total_count);
+        thrust::device_vector<PolygonCountPair> reduced_pairs(total_count);
+        auto ends = thrust::reduce_by_key(
+            keys.begin(),
+            keys.end(),
+            pairs.begin(),
+            reduced_keys.begin(),
+            reduced_pairs.begin(),
+            PolygonKeyEqual{},
+            PolygonCountPairAdd{});
+        const auto reduced_count = static_cast<std::size_t>(ends.first - reduced_keys.begin());
+        reduced_keys.resize(reduced_count);
+        reduced_pairs.resize(reduced_count);
+        result->reduced_key_count = reduced_count;
+
+        check_cuda(cudaEventRecord(event_stop), "record polygon delta stop event");
+        check_cuda(cudaEventSynchronize(event_stop), "synchronize polygon delta stop event");
+        check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure polygon delta elapsed time");
+
+        thrust::host_vector<PolygonRecordKey> host_keys = reduced_keys;
+        thrust::host_vector<PolygonCountPair> host_pairs = reduced_pairs;
+        struct HostDelta {
+            PolygonRecordKey key;
+            std::uint8_t direction;
+            std::uint64_t count;
+            std::uint64_t representative_index;
+        };
+        std::vector<HostDelta> deltas;
+        for (std::size_t i = 0; i < host_keys.size(); ++i) {
+            const auto old_side_count = host_pairs[i].old_count;
+            const auto new_side_count = host_pairs[i].new_count;
+            result->matched_record_count += std::min(old_side_count, new_side_count);
+            if (old_side_count > new_side_count) {
+                deltas.push_back(HostDelta{host_keys[i], kOldSide, old_side_count - new_side_count, host_pairs[i].old_index});
+            } else if (new_side_count > old_side_count) {
+                deltas.push_back(HostDelta{host_keys[i], kNewSide, new_side_count - old_side_count, host_pairs[i].new_index});
+            }
+        }
+        result->record_count = deltas.size();
+        if (!deltas.empty()) {
+            result->layers = static_cast<std::int32_t*>(std::malloc(sizeof(std::int32_t) * deltas.size()));
+            result->datatypes = static_cast<std::int32_t*>(std::malloc(sizeof(std::int32_t) * deltas.size()));
+            result->directions = static_cast<std::uint8_t*>(std::malloc(sizeof(std::uint8_t) * deltas.size()));
+            result->counts = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size()));
+            result->bboxes = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * deltas.size() * 4));
+            result->vertex_counts = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size()));
+            result->flags = static_cast<std::uint32_t*>(std::malloc(sizeof(std::uint32_t) * deltas.size()));
+            result->hashes = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size() * 2));
+            result->representative_indices = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size()));
+            if (!result->layers || !result->datatypes || !result->directions || !result->counts || !result->bboxes
+                || !result->vertex_counts || !result->flags || !result->hashes || !result->representative_indices) {
+                throw std::bad_alloc();
+            }
+            for (std::size_t i = 0; i < deltas.size(); ++i) {
+                const auto& delta = deltas[i];
+                result->layers[i] = delta.key.layer;
+                result->datatypes[i] = delta.key.datatype;
+                result->directions[i] = delta.direction;
+                result->counts[i] = delta.count;
+                result->bboxes[i * 4 + 0] = delta.key.x0;
+                result->bboxes[i * 4 + 1] = delta.key.y0;
+                result->bboxes[i * 4 + 2] = delta.key.x1;
+                result->bboxes[i * 4 + 3] = delta.key.y1;
+                result->vertex_counts[i] = delta.key.vertex_count;
+                result->flags[i] = delta.key.flags;
+                result->hashes[i * 2 + 0] = delta.key.hash0;
+                result->hashes[i * 2 + 1] = delta.key.hash1;
+                result->representative_indices[i] = delta.representative_index;
+            }
+        }
+        cudaEventDestroy(event_start);
+        cudaEventDestroy(event_stop);
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = exc.what();
+        if (result) {
+            gds_cuda_free_polygon_record_delta_result(result);
+        }
+        return 1;
+    } catch (...) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = "unknown CUDA polygon record delta error";
+        if (result) {
+            gds_cuda_free_polygon_record_delta_result(result);
+        }
         return 1;
     }
 }
@@ -1011,6 +2779,646 @@ int gds_cuda_rect_exact_fragments(
         return 1;
     } catch (...) {
         g_last_error = "unknown CUDA rect exact fragment error";
+        return 1;
+    }
+}
+
+int gds_cuda_polygon_component_areas(
+    const std::int64_t* vertices_xy,
+    std::uint64_t vertex_count,
+    const std::uint64_t* polygon_offsets,
+    const std::uint8_t* polygon_sides,
+    std::uint64_t polygon_count,
+    const std::uint64_t* component_offsets,
+    std::uint64_t component_count,
+    std::int64_t* out_twice_areas) {
+    try {
+        if (!out_twice_areas) {
+            throw std::invalid_argument("polygon component area output pointer is null");
+        }
+        if (component_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!polygon_offsets || !polygon_sides || !component_offsets || (vertex_count && !vertices_xy)) {
+            throw std::invalid_argument("polygon component area received null input pointer");
+        }
+        DeviceBuffer<std::int64_t> d_vertices(vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_polygon_offsets(polygon_count + 1);
+        DeviceBuffer<std::uint8_t> d_polygon_sides(polygon_count);
+        DeviceBuffer<std::uint64_t> d_component_offsets(component_count + 1);
+        DeviceBuffer<std::int64_t> d_out(component_count * 3);
+        DeviceBuffer<std::uint32_t> d_errors(component_count);
+        if (vertex_count) {
+            check_cuda(cudaMemcpy(d_vertices.get(), vertices_xy, sizeof(std::int64_t) * vertex_count * 2, cudaMemcpyHostToDevice), "copy polygon component vertices");
+        }
+        check_cuda(cudaMemcpy(d_polygon_offsets.get(), polygon_offsets, sizeof(std::uint64_t) * (polygon_count + 1), cudaMemcpyHostToDevice), "copy polygon component offsets");
+        check_cuda(cudaMemcpy(d_polygon_sides.get(), polygon_sides, sizeof(std::uint8_t) * polygon_count, cudaMemcpyHostToDevice), "copy polygon component sides");
+        check_cuda(cudaMemcpy(d_component_offsets.get(), component_offsets, sizeof(std::uint64_t) * (component_count + 1), cudaMemcpyHostToDevice), "copy polygon component offsets");
+        check_cuda(cudaMemset(d_out.get(), 0, sizeof(std::int64_t) * component_count * 3), "clear polygon component area output");
+        check_cuda(cudaMemset(d_errors.get(), 0, sizeof(std::uint32_t) * component_count), "clear polygon component errors");
+        const int threads = 64;
+        const int blocks = static_cast<int>((component_count + threads - 1) / threads);
+        polygon_component_area_kernel<<<blocks, threads>>>(
+            d_vertices.get(),
+            d_polygon_offsets.get(),
+            d_polygon_sides.get(),
+            d_component_offsets.get(),
+            component_count,
+            d_out.get(),
+            d_errors.get());
+        check_cuda(cudaGetLastError(), "launch polygon component area kernel");
+        check_cuda(cudaDeviceSynchronize(), "run polygon component area kernel");
+        const auto max_error = thrust::reduce(
+            thrust::device_pointer_cast(d_errors.get()),
+            thrust::device_pointer_cast(d_errors.get()) + component_count,
+            std::uint32_t{0},
+            thrust::maximum<std::uint32_t>{});
+        if (max_error) {
+            throw std::runtime_error("polygon component area task exceeds supported limits");
+        }
+        check_cuda(cudaMemcpy(out_twice_areas, d_out.get(), sizeof(std::int64_t) * component_count * 3, cudaMemcpyDeviceToHost), "copy polygon component areas");
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        g_last_error = exc.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown CUDA polygon component area error";
+        return 1;
+    }
+}
+
+int gds_cuda_polygon_component_fragments(
+    const std::int64_t* vertices_xy,
+    std::uint64_t vertex_count,
+    const std::uint64_t* polygon_offsets,
+    const std::uint8_t* polygon_sides,
+    std::uint64_t polygon_count,
+    const std::uint64_t* component_offsets,
+    std::uint64_t component_count,
+    std::uint16_t max_fragments,
+    std::int64_t* out_quads,
+    std::int64_t* out_fragment_twice_areas,
+    std::uint16_t* out_counts,
+    std::int64_t* out_twice_areas) {
+    try {
+        if (!out_quads || !out_fragment_twice_areas || !out_counts || !out_twice_areas) {
+            throw std::invalid_argument("polygon component fragment output pointer is null");
+        }
+        if (component_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!polygon_offsets || !polygon_sides || !component_offsets || (vertex_count && !vertices_xy)) {
+            throw std::invalid_argument("polygon component fragments received null input pointer");
+        }
+        if (max_fragments == 0) {
+            throw std::invalid_argument("polygon component max_fragments must be positive");
+        }
+        DeviceBuffer<std::int64_t> d_vertices(vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_polygon_offsets(polygon_count + 1);
+        DeviceBuffer<std::uint8_t> d_polygon_sides(polygon_count);
+        DeviceBuffer<std::uint64_t> d_component_offsets(component_count + 1);
+        DeviceBuffer<std::int64_t> d_out_quads(component_count * 2 * max_fragments * 8);
+        DeviceBuffer<std::int64_t> d_out_fragment_areas(component_count * 2 * max_fragments);
+        DeviceBuffer<std::uint16_t> d_out_counts(component_count * 2);
+        DeviceBuffer<std::int64_t> d_out_areas(component_count * 3);
+        DeviceBuffer<std::uint32_t> d_errors(component_count);
+        if (vertex_count) {
+            check_cuda(cudaMemcpy(d_vertices.get(), vertices_xy, sizeof(std::int64_t) * vertex_count * 2, cudaMemcpyHostToDevice), "copy polygon component fragment vertices");
+        }
+        check_cuda(cudaMemcpy(d_polygon_offsets.get(), polygon_offsets, sizeof(std::uint64_t) * (polygon_count + 1), cudaMemcpyHostToDevice), "copy polygon component fragment offsets");
+        check_cuda(cudaMemcpy(d_polygon_sides.get(), polygon_sides, sizeof(std::uint8_t) * polygon_count, cudaMemcpyHostToDevice), "copy polygon component fragment sides");
+        check_cuda(cudaMemcpy(d_component_offsets.get(), component_offsets, sizeof(std::uint64_t) * (component_count + 1), cudaMemcpyHostToDevice), "copy polygon component fragment component offsets");
+        check_cuda(cudaMemset(d_out_quads.get(), 0, sizeof(std::int64_t) * component_count * 2 * max_fragments * 8), "clear polygon component fragments");
+        check_cuda(cudaMemset(d_out_fragment_areas.get(), 0, sizeof(std::int64_t) * component_count * 2 * max_fragments), "clear polygon component fragment areas");
+        check_cuda(cudaMemset(d_out_counts.get(), 0, sizeof(std::uint16_t) * component_count * 2), "clear polygon component fragment counts");
+        check_cuda(cudaMemset(d_out_areas.get(), 0, sizeof(std::int64_t) * component_count * 3), "clear polygon component fragment areas");
+        check_cuda(cudaMemset(d_errors.get(), 0, sizeof(std::uint32_t) * component_count), "clear polygon component fragment errors");
+        const int threads = 64;
+        const int blocks = static_cast<int>((component_count + threads - 1) / threads);
+        polygon_component_fragment_kernel<<<blocks, threads>>>(
+            d_vertices.get(),
+            d_polygon_offsets.get(),
+            d_polygon_sides.get(),
+            d_component_offsets.get(),
+            component_count,
+            max_fragments,
+            d_out_quads.get(),
+            d_out_fragment_areas.get(),
+            d_out_counts.get(),
+            d_out_areas.get(),
+            d_errors.get());
+        check_cuda(cudaGetLastError(), "launch polygon component fragment kernel");
+        check_cuda(cudaDeviceSynchronize(), "run polygon component fragment kernel");
+        const auto max_error = thrust::reduce(
+            thrust::device_pointer_cast(d_errors.get()),
+            thrust::device_pointer_cast(d_errors.get()) + component_count,
+            std::uint32_t{0},
+            thrust::maximum<std::uint32_t>{});
+        if (max_error) {
+            throw std::runtime_error(max_error == 4 ? "polygon component fragment task exceeds fragment limit" : "polygon component fragment task exceeds supported limits");
+        }
+        check_cuda(cudaMemcpy(out_quads, d_out_quads.get(), sizeof(std::int64_t) * component_count * 2 * max_fragments * 8, cudaMemcpyDeviceToHost), "copy polygon component fragments");
+        check_cuda(cudaMemcpy(out_fragment_twice_areas, d_out_fragment_areas.get(), sizeof(std::int64_t) * component_count * 2 * max_fragments, cudaMemcpyDeviceToHost), "copy polygon component fragment areas");
+        check_cuda(cudaMemcpy(out_counts, d_out_counts.get(), sizeof(std::uint16_t) * component_count * 2, cudaMemcpyDeviceToHost), "copy polygon component fragment counts");
+        check_cuda(cudaMemcpy(out_twice_areas, d_out_areas.get(), sizeof(std::int64_t) * component_count * 3, cudaMemcpyDeviceToHost), "copy polygon component fragment areas");
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        g_last_error = exc.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown CUDA polygon component fragment error";
+        return 1;
+    }
+}
+
+int gds_cuda_one_sided_boundary_edges(
+    const std::int64_t* vertices_xy,
+    std::uint64_t vertex_count,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    const std::int64_t* signed_twice_areas,
+    std::uint64_t polygon_count,
+    const double* segment_points,
+    const std::uint32_t* segment_polygon_indices,
+    std::uint64_t segment_count,
+    double* out_edges,
+    std::uint8_t* out_keep) {
+    try {
+        if (!out_edges || !out_keep) {
+            throw std::invalid_argument("one-sided boundary edge output pointer is null");
+        }
+        if (segment_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!polygon_offsets || !bboxes || !signed_twice_areas || !segment_points || !segment_polygon_indices || (vertex_count && !vertices_xy)) {
+            throw std::invalid_argument("one-sided boundary edge received null input pointer");
+        }
+        DeviceBuffer<std::int64_t> d_vertices(vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_polygon_offsets(polygon_count + 1);
+        DeviceBuffer<std::int64_t> d_bboxes(polygon_count * 4);
+        DeviceBuffer<std::int64_t> d_signed_twice_areas(polygon_count);
+        DeviceBuffer<double> d_segment_points(segment_count * 4);
+        DeviceBuffer<std::uint32_t> d_segment_polygon_indices(segment_count);
+        DeviceBuffer<double> d_out_edges(segment_count * 4);
+        DeviceBuffer<std::uint8_t> d_out_keep(segment_count);
+        if (vertex_count) {
+            check_cuda(cudaMemcpy(d_vertices.get(), vertices_xy, sizeof(std::int64_t) * vertex_count * 2, cudaMemcpyHostToDevice), "copy one-sided boundary vertices");
+        }
+        check_cuda(cudaMemcpy(d_polygon_offsets.get(), polygon_offsets, sizeof(std::uint64_t) * (polygon_count + 1), cudaMemcpyHostToDevice), "copy one-sided boundary offsets");
+        check_cuda(cudaMemcpy(d_bboxes.get(), bboxes, sizeof(std::int64_t) * polygon_count * 4, cudaMemcpyHostToDevice), "copy one-sided boundary bboxes");
+        check_cuda(cudaMemcpy(d_signed_twice_areas.get(), signed_twice_areas, sizeof(std::int64_t) * polygon_count, cudaMemcpyHostToDevice), "copy one-sided boundary signed areas");
+        check_cuda(cudaMemcpy(d_segment_points.get(), segment_points, sizeof(double) * segment_count * 4, cudaMemcpyHostToDevice), "copy one-sided boundary segment points");
+        check_cuda(cudaMemcpy(d_segment_polygon_indices.get(), segment_polygon_indices, sizeof(std::uint32_t) * segment_count, cudaMemcpyHostToDevice), "copy one-sided boundary segment polygon indices");
+        check_cuda(cudaMemset(d_out_edges.get(), 0, sizeof(double) * segment_count * 4), "clear one-sided boundary edges");
+        check_cuda(cudaMemset(d_out_keep.get(), 0, sizeof(std::uint8_t) * segment_count), "clear one-sided boundary keep flags");
+        const int threads = 256;
+        const int blocks = static_cast<int>((segment_count + threads - 1) / threads);
+        one_sided_boundary_edge_kernel<<<blocks, threads>>>(
+            d_vertices.get(),
+            d_polygon_offsets.get(),
+            d_bboxes.get(),
+            d_signed_twice_areas.get(),
+            polygon_count,
+            d_segment_points.get(),
+            d_segment_polygon_indices.get(),
+            segment_count,
+            d_out_edges.get(),
+            d_out_keep.get());
+        check_cuda(cudaGetLastError(), "launch one-sided boundary edge kernel");
+        check_cuda(cudaDeviceSynchronize(), "run one-sided boundary edge kernel");
+        check_cuda(cudaMemcpy(out_edges, d_out_edges.get(), sizeof(double) * segment_count * 4, cudaMemcpyDeviceToHost), "copy one-sided boundary edges");
+        check_cuda(cudaMemcpy(out_keep, d_out_keep.get(), sizeof(std::uint8_t) * segment_count, cudaMemcpyDeviceToHost), "copy one-sided boundary keep flags");
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        g_last_error = exc.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown CUDA one-sided boundary edge error";
+        return 1;
+    }
+}
+
+int gds_cuda_mixed_boundary_edges(
+    const std::int64_t* vertices_xy,
+    std::uint64_t vertex_count,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    const std::uint8_t* polygon_sides,
+    std::uint64_t polygon_count,
+    const double* segment_points,
+    std::uint64_t segment_count,
+    std::uint8_t direction,
+    double* out_edges,
+    std::uint8_t* out_keep) {
+    try {
+        if (!out_edges || !out_keep) {
+            throw std::invalid_argument("mixed boundary edge output pointer is null");
+        }
+        if (segment_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!polygon_offsets || !bboxes || !polygon_sides || !segment_points || (vertex_count && !vertices_xy)) {
+            throw std::invalid_argument("mixed boundary edge received null input pointer");
+        }
+        if (direction != kOldSide && direction != kNewSide) {
+            throw std::invalid_argument("mixed boundary edge direction must be old or new side");
+        }
+        DeviceBuffer<std::int64_t> d_vertices(vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_polygon_offsets(polygon_count + 1);
+        DeviceBuffer<std::int64_t> d_bboxes(polygon_count * 4);
+        DeviceBuffer<std::uint8_t> d_polygon_sides(polygon_count);
+        DeviceBuffer<double> d_segment_points(segment_count * 4);
+        DeviceBuffer<double> d_out_edges(segment_count * 4);
+        DeviceBuffer<std::uint8_t> d_out_keep(segment_count);
+        if (vertex_count) {
+            check_cuda(cudaMemcpy(d_vertices.get(), vertices_xy, sizeof(std::int64_t) * vertex_count * 2, cudaMemcpyHostToDevice), "copy mixed boundary vertices");
+        }
+        check_cuda(cudaMemcpy(d_polygon_offsets.get(), polygon_offsets, sizeof(std::uint64_t) * (polygon_count + 1), cudaMemcpyHostToDevice), "copy mixed boundary offsets");
+        check_cuda(cudaMemcpy(d_bboxes.get(), bboxes, sizeof(std::int64_t) * polygon_count * 4, cudaMemcpyHostToDevice), "copy mixed boundary bboxes");
+        check_cuda(cudaMemcpy(d_polygon_sides.get(), polygon_sides, sizeof(std::uint8_t) * polygon_count, cudaMemcpyHostToDevice), "copy mixed boundary sides");
+        check_cuda(cudaMemcpy(d_segment_points.get(), segment_points, sizeof(double) * segment_count * 4, cudaMemcpyHostToDevice), "copy mixed boundary segment points");
+        check_cuda(cudaMemset(d_out_edges.get(), 0, sizeof(double) * segment_count * 4), "clear mixed boundary edges");
+        check_cuda(cudaMemset(d_out_keep.get(), 0, sizeof(std::uint8_t) * segment_count), "clear mixed boundary keep flags");
+        const int threads = 256;
+        const int blocks = static_cast<int>((segment_count + threads - 1) / threads);
+        mixed_boundary_edge_kernel<<<blocks, threads>>>(
+            d_vertices.get(),
+            d_polygon_offsets.get(),
+            d_bboxes.get(),
+            d_polygon_sides.get(),
+            polygon_count,
+            d_segment_points.get(),
+            segment_count,
+            direction,
+            d_out_edges.get(),
+            d_out_keep.get());
+        check_cuda(cudaGetLastError(), "launch mixed boundary edge kernel");
+        check_cuda(cudaDeviceSynchronize(), "run mixed boundary edge kernel");
+        check_cuda(cudaMemcpy(out_edges, d_out_edges.get(), sizeof(double) * segment_count * 4, cudaMemcpyDeviceToHost), "copy mixed boundary edges");
+        check_cuda(cudaMemcpy(out_keep, d_out_keep.get(), sizeof(std::uint8_t) * segment_count, cudaMemcpyDeviceToHost), "copy mixed boundary keep flags");
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        g_last_error = exc.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown CUDA mixed boundary edge error";
+        return 1;
+    }
+}
+
+int gds_cuda_one_sided_boundary_edges_unsplit_if_safe(
+    const std::int64_t* vertices_xy,
+    std::uint64_t vertex_count,
+    const std::uint64_t* polygon_offsets,
+    const std::int64_t* bboxes,
+    const std::int64_t* signed_twice_areas,
+    std::uint64_t polygon_count,
+    const double* segment_points,
+    const std::uint32_t* segment_polygon_indices,
+    std::uint64_t segment_count,
+    double* out_edges,
+    std::uint8_t* out_keep,
+    std::uint8_t* out_safe) {
+    try {
+        if (!out_edges || !out_keep || !out_safe) {
+            throw std::invalid_argument("one-sided unsplit boundary output pointer is null");
+        }
+        *out_safe = 0;
+        if (segment_count == 0) {
+            *out_safe = 1;
+            g_last_error.clear();
+            return 0;
+        }
+        if (!polygon_offsets || !bboxes || !signed_twice_areas || !segment_points || !segment_polygon_indices || (vertex_count && !vertices_xy)) {
+            throw std::invalid_argument("one-sided unsplit boundary received null input pointer");
+        }
+        DeviceBuffer<std::int64_t> d_vertices(vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_polygon_offsets(polygon_count + 1);
+        DeviceBuffer<std::int64_t> d_bboxes(polygon_count * 4);
+        DeviceBuffer<std::int64_t> d_signed_twice_areas(polygon_count);
+        DeviceBuffer<double> d_segment_points(segment_count * 4);
+        DeviceBuffer<std::uint32_t> d_segment_polygon_indices(segment_count);
+        DeviceBuffer<double> d_out_edges(segment_count * 4);
+        DeviceBuffer<std::uint8_t> d_out_keep(segment_count);
+        DeviceBuffer<std::uint32_t> d_split_required(1);
+        if (vertex_count) {
+            check_cuda(cudaMemcpy(d_vertices.get(), vertices_xy, sizeof(std::int64_t) * vertex_count * 2, cudaMemcpyHostToDevice), "copy one-sided unsplit boundary vertices");
+        }
+        check_cuda(cudaMemcpy(d_polygon_offsets.get(), polygon_offsets, sizeof(std::uint64_t) * (polygon_count + 1), cudaMemcpyHostToDevice), "copy one-sided unsplit boundary offsets");
+        check_cuda(cudaMemcpy(d_bboxes.get(), bboxes, sizeof(std::int64_t) * polygon_count * 4, cudaMemcpyHostToDevice), "copy one-sided unsplit boundary bboxes");
+        check_cuda(cudaMemcpy(d_signed_twice_areas.get(), signed_twice_areas, sizeof(std::int64_t) * polygon_count, cudaMemcpyHostToDevice), "copy one-sided unsplit boundary signed areas");
+        check_cuda(cudaMemcpy(d_segment_points.get(), segment_points, sizeof(double) * segment_count * 4, cudaMemcpyHostToDevice), "copy one-sided unsplit boundary segment points");
+        check_cuda(cudaMemcpy(d_segment_polygon_indices.get(), segment_polygon_indices, sizeof(std::uint32_t) * segment_count, cudaMemcpyHostToDevice), "copy one-sided unsplit boundary segment polygon indices");
+        check_cuda(cudaMemset(d_out_edges.get(), 0, sizeof(double) * segment_count * 4), "clear one-sided unsplit boundary edges");
+        check_cuda(cudaMemset(d_out_keep.get(), 0, sizeof(std::uint8_t) * segment_count), "clear one-sided unsplit boundary keep flags");
+        check_cuda(cudaMemset(d_split_required.get(), 0, sizeof(std::uint32_t)), "clear one-sided unsplit split flag");
+        dim3 threads2(16, 16);
+        dim3 blocks2(
+            static_cast<unsigned int>((segment_count + threads2.x - 1) / threads2.x),
+            static_cast<unsigned int>((segment_count + threads2.y - 1) / threads2.y));
+        one_sided_split_required_kernel<<<blocks2, threads2>>>(
+            d_segment_points.get(),
+            segment_count,
+            d_split_required.get());
+        check_cuda(cudaGetLastError(), "launch one-sided split-required kernel");
+        check_cuda(cudaDeviceSynchronize(), "run one-sided split-required kernel");
+        std::uint32_t split_required = 0;
+        check_cuda(cudaMemcpy(&split_required, d_split_required.get(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost), "copy one-sided split-required flag");
+        if (split_required) {
+            check_cuda(cudaMemset(d_out_keep.get(), 0, sizeof(std::uint8_t) * segment_count), "clear one-sided fallback keep flags");
+            check_cuda(cudaMemcpy(out_keep, d_out_keep.get(), sizeof(std::uint8_t) * segment_count, cudaMemcpyDeviceToHost), "copy one-sided fallback keep flags");
+            *out_safe = 0;
+            g_last_error.clear();
+            return 0;
+        }
+        const int threads = 256;
+        const int blocks = static_cast<int>((segment_count + threads - 1) / threads);
+        one_sided_boundary_edge_kernel<<<blocks, threads>>>(
+            d_vertices.get(),
+            d_polygon_offsets.get(),
+            d_bboxes.get(),
+            d_signed_twice_areas.get(),
+            polygon_count,
+            d_segment_points.get(),
+            d_segment_polygon_indices.get(),
+            segment_count,
+            d_out_edges.get(),
+            d_out_keep.get());
+        check_cuda(cudaGetLastError(), "launch one-sided unsplit boundary edge kernel");
+        check_cuda(cudaDeviceSynchronize(), "run one-sided unsplit boundary edge kernel");
+        check_cuda(cudaMemcpy(out_edges, d_out_edges.get(), sizeof(double) * segment_count * 4, cudaMemcpyDeviceToHost), "copy one-sided unsplit boundary edges");
+        check_cuda(cudaMemcpy(out_keep, d_out_keep.get(), sizeof(std::uint8_t) * segment_count, cudaMemcpyDeviceToHost), "copy one-sided unsplit boundary keep flags");
+        *out_safe = 1;
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        g_last_error = exc.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown CUDA one-sided unsplit boundary edge error";
+        return 1;
+    }
+}
+
+int gds_cuda_boundary_loops_from_edges(
+    const std::int64_t* edges,
+    std::uint64_t edge_count,
+    GdsCudaBoundaryLoopResult* result) {
+    cudaEvent_t event_start = nullptr;
+    cudaEvent_t event_stop = nullptr;
+    try {
+        if (!result) {
+            throw std::invalid_argument("CUDA boundary loop output pointer is null");
+        }
+        *result = GdsCudaBoundaryLoopResult{};
+        if (edge_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!edges) {
+            throw std::invalid_argument("CUDA boundary loop edge pointer is null");
+        }
+        DeviceBuffer<std::int64_t> d_edges(edge_count * 4);
+        DeviceBuffer<std::uint64_t> d_next_indices(edge_count);
+        DeviceBuffer<std::uint8_t> d_remaining(edge_count);
+        DeviceBuffer<std::int64_t> d_scratch_a(edge_count * 2);
+        DeviceBuffer<std::int64_t> d_scratch_b(edge_count * 2);
+        DeviceBuffer<std::int64_t> d_vertices(edge_count * 2);
+        DeviceBuffer<std::uint64_t> d_offsets(edge_count + 1);
+        DeviceBuffer<std::int64_t> d_bboxes(edge_count * 4);
+        DeviceBuffer<std::int64_t> d_areas(edge_count);
+        DeviceBuffer<DeviceLoopTraceStats> d_stats(1);
+        check_cuda(cudaMemcpy(d_edges.get(), edges, sizeof(std::int64_t) * edge_count * 4, cudaMemcpyHostToDevice), "copy boundary loop edges");
+        check_cuda(cudaMemset(d_next_indices.get(), 0xff, sizeof(std::uint64_t) * edge_count), "clear boundary loop next indices");
+        check_cuda(cudaMemset(d_remaining.get(), 1, sizeof(std::uint8_t) * edge_count), "initialize boundary loop remaining flags");
+        check_cuda(cudaMemset(d_vertices.get(), 0, sizeof(std::int64_t) * edge_count * 2), "clear boundary loop vertices");
+        check_cuda(cudaMemset(d_offsets.get(), 0, sizeof(std::uint64_t) * (edge_count + 1)), "clear boundary loop offsets");
+        check_cuda(cudaMemset(d_bboxes.get(), 0, sizeof(std::int64_t) * edge_count * 4), "clear boundary loop bboxes");
+        check_cuda(cudaMemset(d_areas.get(), 0, sizeof(std::int64_t) * edge_count), "clear boundary loop areas");
+        check_cuda(cudaMemset(d_stats.get(), 0, sizeof(DeviceLoopTraceStats)), "clear boundary loop stats");
+        check_cuda(cudaEventCreate(&event_start), "create boundary loop start event");
+        check_cuda(cudaEventCreate(&event_stop), "create boundary loop stop event");
+        check_cuda(cudaEventRecord(event_start), "record boundary loop start event");
+        {
+            const int threads = 256;
+            const int blocks = static_cast<int>((edge_count + threads - 1) / threads);
+            boundary_loop_next_kernel<<<blocks, threads>>>(d_edges.get(), edge_count, d_next_indices.get());
+            check_cuda(cudaGetLastError(), "launch boundary loop next kernel");
+        }
+        boundary_loop_trace_kernel<<<1, 1>>>(
+            d_edges.get(),
+            edge_count,
+            d_next_indices.get(),
+            d_remaining.get(),
+            d_scratch_a.get(),
+            d_scratch_b.get(),
+            d_vertices.get(),
+            d_offsets.get(),
+            d_bboxes.get(),
+            d_areas.get(),
+            d_stats.get());
+        check_cuda(cudaGetLastError(), "launch boundary loop trace kernel");
+        check_cuda(cudaEventRecord(event_stop), "record boundary loop stop event");
+        check_cuda(cudaEventSynchronize(event_stop), "synchronize boundary loop stop event");
+        DeviceLoopTraceStats stats{};
+        check_cuda(cudaMemcpy(&stats, d_stats.get(), sizeof(DeviceLoopTraceStats), cudaMemcpyDeviceToHost), "copy boundary loop stats");
+        if (stats.error) {
+            throw std::runtime_error(stats.error == 1 ? "CUDA boundary loop trace exceeded raw vertex limit" : "CUDA boundary loop trace exceeded output limit");
+        }
+        result->fragment_count = stats.fragment_count;
+        result->vertex_count = stats.vertex_count;
+        result->dropped_zero_area_loop_count = stats.dropped_zero_area_loop_count;
+        result->cuda_kernel_count = 1;
+        check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure boundary loop elapsed time");
+        if (stats.fragment_count) {
+            result->fragment_offsets = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * (stats.fragment_count + 1)));
+            result->vertices_xy = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * stats.vertex_count * 2));
+            result->bboxes = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * stats.fragment_count * 4));
+            result->twice_areas = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * stats.fragment_count));
+            if (!result->fragment_offsets || !result->vertices_xy || !result->bboxes || !result->twice_areas) {
+                throw std::runtime_error("CUDA boundary loop host allocation failed");
+            }
+            check_cuda(cudaMemcpy(result->fragment_offsets, d_offsets.get(), sizeof(std::uint64_t) * (stats.fragment_count + 1), cudaMemcpyDeviceToHost), "copy boundary loop offsets");
+            check_cuda(cudaMemcpy(result->vertices_xy, d_vertices.get(), sizeof(std::int64_t) * stats.vertex_count * 2, cudaMemcpyDeviceToHost), "copy boundary loop vertices");
+            check_cuda(cudaMemcpy(result->bboxes, d_bboxes.get(), sizeof(std::int64_t) * stats.fragment_count * 4, cudaMemcpyDeviceToHost), "copy boundary loop bboxes");
+            check_cuda(cudaMemcpy(result->twice_areas, d_areas.get(), sizeof(std::int64_t) * stats.fragment_count, cudaMemcpyDeviceToHost), "copy boundary loop areas");
+        } else {
+            result->fragment_offsets = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t)));
+            if (!result->fragment_offsets) {
+                throw std::runtime_error("CUDA boundary loop empty offset allocation failed");
+            }
+            result->fragment_offsets[0] = 0;
+        }
+        cudaEventDestroy(event_start);
+        cudaEventDestroy(event_stop);
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = exc.what();
+        if (result) {
+            gds_cuda_free_boundary_loop_result(result);
+        }
+        return 1;
+    } catch (...) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = "unknown CUDA boundary loop error";
+        if (result) {
+            gds_cuda_free_boundary_loop_result(result);
+        }
+        return 1;
+    }
+}
+
+int gds_cuda_context_overlap_pairs(
+    const std::int64_t* component_bboxes,
+    const std::int32_t* component_layers,
+    const std::int32_t* component_datatypes,
+    std::uint64_t component_count,
+    const std::int64_t* polygon_bboxes,
+    const std::int32_t* polygon_layers,
+    const std::int32_t* polygon_datatypes,
+    std::uint64_t polygon_count,
+    GdsCudaContextOverlapPairsResult* result) {
+    cudaEvent_t event_start = nullptr;
+    cudaEvent_t event_stop = nullptr;
+    try {
+        if (!result) {
+            throw std::invalid_argument("context overlap result pointer is null");
+        }
+        *result = GdsCudaContextOverlapPairsResult{};
+        if (component_count == 0 || polygon_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!component_bboxes || !component_layers || !component_datatypes || !polygon_bboxes || !polygon_layers || !polygon_datatypes) {
+            throw std::invalid_argument("context overlap input contains null pointer");
+        }
+        if (component_count > std::numeric_limits<std::uint64_t>::max() / polygon_count) {
+            throw std::overflow_error("context overlap pair search count overflow");
+        }
+        const std::uint64_t total_pairs = component_count * polygon_count;
+        check_cuda(cudaEventCreate(&event_start), "create context overlap start event");
+        check_cuda(cudaEventCreate(&event_stop), "create context overlap stop event");
+        check_cuda(cudaEventRecord(event_start), "record context overlap start event");
+
+        DeviceBuffer<std::int64_t> d_component_bboxes(component_count * 4);
+        DeviceBuffer<std::int32_t> d_component_layers(component_count);
+        DeviceBuffer<std::int32_t> d_component_datatypes(component_count);
+        DeviceBuffer<std::int64_t> d_polygon_bboxes(polygon_count * 4);
+        DeviceBuffer<std::int32_t> d_polygon_layers(polygon_count);
+        DeviceBuffer<std::int32_t> d_polygon_datatypes(polygon_count);
+        DeviceBuffer<std::uint64_t> d_flags(total_pairs);
+
+        check_cuda(cudaMemcpy(d_component_bboxes.get(), component_bboxes, sizeof(std::int64_t) * component_count * 4, cudaMemcpyHostToDevice), "copy context component bboxes");
+        check_cuda(cudaMemcpy(d_component_layers.get(), component_layers, sizeof(std::int32_t) * component_count, cudaMemcpyHostToDevice), "copy context component layers");
+        check_cuda(cudaMemcpy(d_component_datatypes.get(), component_datatypes, sizeof(std::int32_t) * component_count, cudaMemcpyHostToDevice), "copy context component datatypes");
+        check_cuda(cudaMemcpy(d_polygon_bboxes.get(), polygon_bboxes, sizeof(std::int64_t) * polygon_count * 4, cudaMemcpyHostToDevice), "copy context polygon bboxes");
+        check_cuda(cudaMemcpy(d_polygon_layers.get(), polygon_layers, sizeof(std::int32_t) * polygon_count, cudaMemcpyHostToDevice), "copy context polygon layers");
+        check_cuda(cudaMemcpy(d_polygon_datatypes.get(), polygon_datatypes, sizeof(std::int32_t) * polygon_count, cudaMemcpyHostToDevice), "copy context polygon datatypes");
+
+        const int threads = 256;
+        const int blocks = static_cast<int>(std::min<std::uint64_t>((total_pairs + threads - 1) / threads, 65535));
+        context_overlap_flag_kernel<<<blocks, threads>>>(
+            d_component_bboxes.get(),
+            d_component_layers.get(),
+            d_component_datatypes.get(),
+            component_count,
+            d_polygon_bboxes.get(),
+            d_polygon_layers.get(),
+            d_polygon_datatypes.get(),
+            polygon_count,
+            total_pairs,
+            d_flags.get());
+        check_cuda(cudaGetLastError(), "launch context overlap flag kernel");
+
+        thrust::device_ptr<std::uint64_t> flags_begin(d_flags.get());
+        thrust::device_ptr<std::uint64_t> flags_end(d_flags.get() + total_pairs);
+        thrust::device_vector<std::uint64_t> d_offsets(total_pairs);
+        thrust::exclusive_scan(thrust::device, flags_begin, flags_end, d_offsets.begin());
+
+        std::uint64_t last_offset = 0;
+        std::uint64_t last_flag = 0;
+        check_cuda(cudaMemcpy(&last_offset, thrust::raw_pointer_cast(d_offsets.data()) + (total_pairs - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy context overlap last offset");
+        check_cuda(cudaMemcpy(&last_flag, d_flags.get() + (total_pairs - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy context overlap last flag");
+        if (last_flag > std::numeric_limits<std::uint64_t>::max() - last_offset) {
+            throw std::overflow_error("context overlap pair count overflow");
+        }
+        result->pair_count = last_offset + last_flag;
+        result->cuda_kernel_count = 3;
+
+        if (result->pair_count) {
+            DeviceBuffer<std::uint64_t> d_component_indices(result->pair_count);
+            DeviceBuffer<std::uint64_t> d_polygon_indices(result->pair_count);
+            context_overlap_emit_kernel<<<blocks, threads>>>(
+                d_flags.get(),
+                thrust::raw_pointer_cast(d_offsets.data()),
+                polygon_count,
+                total_pairs,
+                d_component_indices.get(),
+                d_polygon_indices.get());
+            check_cuda(cudaGetLastError(), "launch context overlap emit kernel");
+            check_cuda(cudaEventRecord(event_stop), "record context overlap stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize context overlap stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure context overlap elapsed time");
+
+            result->component_indices = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * result->pair_count));
+            result->polygon_indices = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * result->pair_count));
+            if (!result->component_indices || !result->polygon_indices) {
+                throw std::runtime_error("context overlap output allocation failed");
+            }
+            check_cuda(cudaMemcpy(result->component_indices, d_component_indices.get(), sizeof(std::uint64_t) * result->pair_count, cudaMemcpyDeviceToHost), "copy context overlap component indices");
+            check_cuda(cudaMemcpy(result->polygon_indices, d_polygon_indices.get(), sizeof(std::uint64_t) * result->pair_count, cudaMemcpyDeviceToHost), "copy context overlap polygon indices");
+        } else {
+            check_cuda(cudaEventRecord(event_stop), "record empty context overlap stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize empty context overlap stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure empty context overlap elapsed time");
+        }
+        cudaEventDestroy(event_start);
+        cudaEventDestroy(event_stop);
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = exc.what();
+        if (result) {
+            gds_cuda_free_context_overlap_pairs_result(result);
+        }
+        return 1;
+    } catch (...) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = "unknown CUDA context overlap error";
+        if (result) {
+            gds_cuda_free_context_overlap_pairs_result(result);
+        }
         return 1;
     }
 }

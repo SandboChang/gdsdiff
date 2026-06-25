@@ -221,6 +221,23 @@ def test_exact_component_executor_skips_identical_rectangle_pairs_before_backend
     assert seen_tasks == []
 
 
+def test_component_tasks_skip_identical_non_rect_source_sets():
+    layer = LayerSpec(1, 0)
+    polygon_a = ((0, 0), (10, 0), (7, 4), (10, 10), (0, 10))
+    polygon_b = ((30, 0), (40, 5), (30, 10), (25, 5))
+    polygon_a_reversed = tuple(reversed(polygon_a))
+    polygon_b_rotated = polygon_b[2:] + polygon_b[:2]
+
+    tasks = _component_task_specs(
+        layer,
+        (polygon_a, polygon_b),
+        (polygon_b_rotated, polygon_a_reversed),
+        1.0,
+    )
+
+    assert tasks == ()
+
+
 def test_sparse_rectangle_residual_tasks_drop_common_rectangles_before_components():
     layer = LayerSpec(1, 0)
     common = tuple(_rect(0, 0, 10, 10))

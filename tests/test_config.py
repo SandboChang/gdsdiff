@@ -9,6 +9,7 @@ from gds_tools_tk.gpu_compare import (
     Backend,
     CompareConfig,
     DifferenceDirection,
+    EvidenceEngine,
     FailurePolicy,
     GridSpec,
     LayerSpec,
@@ -36,6 +37,7 @@ def test_compare_config_accepts_default_all_layers():
     assert config.new_path.name == "new.gds"
     assert config.layers == "all"
     assert config.backend is Backend.AUTO
+    assert config.evidence_engine is EvidenceEngine.AUTO
     assert config.path_policy is PathPolicy.GDSTK
     assert config.failure_policy is FailurePolicy.FAIL_ON_UNEXPECTED
 
@@ -48,6 +50,7 @@ def test_compare_config_serialization_is_deterministic():
         dbu="1e-9",
         precision=Decimal("1e-9"),
         backend="cpu",
+        evidence_engine="gdstk-oracle",
         path_policy="reject",
         tile_size=256,
     )
@@ -64,6 +67,7 @@ def test_compare_config_serialization_is_deterministic():
         "precision": "1E-9",
         "path_policy": "reject",
         "backend": "cpu",
+        "evidence_engine": "gdstk-oracle",
         "tile_size": 256,
         "allowed_regions": [],
         "allow_empty_selected_layer": False,
@@ -90,6 +94,9 @@ def test_compare_config_rejects_conflicting_dbu_and_precision():
 def test_compare_config_rejects_invalid_backend_and_tile_size():
     with pytest.raises(ValueError, match="invalid Backend"):
         CompareConfig("old.gds", "new.gds", backend="gpu")
+
+    with pytest.raises(ValueError, match="invalid EvidenceEngine"):
+        CompareConfig("old.gds", "new.gds", evidence_engine="not-real")
 
     with pytest.raises(ValueError, match="tile_size"):
         CompareConfig("old.gds", "new.gds", tile_size=0)

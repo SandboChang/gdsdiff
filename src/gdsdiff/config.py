@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterable, Literal
 
-from .semantics import Backend, DifferenceDirection, FailurePolicy, PathPolicy
+from .semantics import Backend, DifferenceDirection, EvidenceEngine, FailurePolicy, PathPolicy
 
 LayerSelector = Literal["all"] | tuple["LayerSpec", ...]
 
@@ -159,6 +159,7 @@ class CompareConfig:
     precision: Decimal | str | float | None = None
     path_policy: PathPolicy | str = PathPolicy.GDSTK
     backend: Backend | str = Backend.AUTO
+    evidence_engine: EvidenceEngine | str = EvidenceEngine.AUTO
     tile_size: int = 1024
     allowed_regions: tuple[AllowedRegion, ...] = field(default_factory=tuple)
     allow_empty_selected_layer: bool = False
@@ -190,6 +191,7 @@ class CompareConfig:
         if self.require_gpu and backend == Backend.CPU:
             raise ValueError("require_gpu cannot be used with backend='cpu'")
         object.__setattr__(self, "backend", backend)
+        object.__setattr__(self, "evidence_engine", EvidenceEngine.coerce(self.evidence_engine))
         object.__setattr__(self, "failure_policy", FailurePolicy.coerce(self.failure_policy))
         if self.tile_size <= 0:
             raise ValueError("tile_size must be positive")
@@ -210,6 +212,7 @@ class CompareConfig:
             "precision": str(self.precision) if self.precision is not None else None,
             "path_policy": self.path_policy.value,
             "backend": self.backend.value,
+            "evidence_engine": self.evidence_engine.value,
             "tile_size": self.tile_size,
             "allowed_regions": [region.to_json() for region in self.allowed_regions],
             "allow_empty_selected_layer": self.allow_empty_selected_layer,

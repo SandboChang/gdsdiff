@@ -13,6 +13,8 @@ from gds_tools_tk.gpu_compare import (
     compare_gds_files,
 )
 from gds_tools_tk.gpu_compare.backends.cuda_ctypes import cuda_ctypes_available
+from gds_tools_tk.gpu_compare.config import LayerSpec
+from gds_tools_tk.gpu_compare.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
 
 
 def _write_pair(tmp_path, *, shifted=True):
@@ -69,6 +71,27 @@ def test_public_api_equivalent_pair_returns_zero_exit(tmp_path):
     assert result.status == CompareStatus.EQUIVALENT
     assert result.exit_code == 0
     assert result.report.to_json_dict()["status"] == "equivalent"
+
+
+def test_cpu_audit_summary_normalizes_collinear_loop_vertices():
+    layer = LayerSpec(1, 0)
+    gpu_fragment = DiffFragment(
+        points=((4, 4), (0, 4), (0, 2), (1, 2), (1, 3), (3, 3), (3, 2), (0, 2), (0, 0), (4, 0)),
+        bbox=(0, 0, 4, 4),
+        twice_area=20,
+    )
+    cpu_fragment = DiffFragment(
+        points=((4, 0), (4, 4), (0, 4), (0, 2), (1, 2), (1, 3), (3, 3), (3, 2), (1, 2), (0, 2), (0, 0)),
+        bbox=(0, 0, 4, 4),
+        twice_area=20,
+    )
+    gpu_result = ExactOracleResult((LayerExactDiff(layer=layer, old_minus_new=(gpu_fragment,), xor=(gpu_fragment,)),))
+    cpu_result = ExactOracleResult((LayerExactDiff(layer=layer, old_minus_new=(cpu_fragment,), xor=(cpu_fragment,)),))
+
+    summary = api_module._exact_result_audit_summary(gpu_result, cpu_result)
+
+    assert summary["match"] is True
+    assert summary["mismatch_count"] == 0
 
 
 def test_public_api_unexpected_difference_returns_failure_exit(tmp_path):
@@ -373,6 +396,34 @@ def test_forced_geometry_can_reuse_cached_preprocessing(tmp_path, monkeypatch):
     assert second_payload["timings"]["new_geometry_cache_hit"] is True
     assert second_payload["timings"]["extract_s"] == 0.0
     assert second_payload["exact_fallback"]["mode"] == "windowed"
+
+
+def test_gpu_polygon_can_reuse_native_polygon_cache(tmp_path):
+    if not cuda_ctypes_available():
+        pytest.skip("CUDA ctypes backend is not available")
+    old_path, new_path = _write_pair(tmp_path)
+    cache_dir = tmp_path / "native_polygon_cache"
+    config = CompareConfig(
+        old_path,
+        new_path,
+        backend="cuda",
+        evidence_engine="gpu-polygon",
+        geometry_cache_dir=cache_dir,
+        tile_size=10,
+    )
+
+    first = compare_gds_files(config, use_fast_shortcuts=False)
+    second = compare_gds_files(config, use_fast_shortcuts=False)
+    first_payload = first.report.to_json_dict()
+    second_payload = second.report.to_json_dict()
+
+    assert first.status == second.status == CompareStatus.UNEXPECTED_DIFFERENCES
+    assert first_payload["timings"]["old_native_polygon_cache_hit"] is False
+    assert first_payload["timings"]["new_native_polygon_cache_hit"] is False
+    assert second_payload["timings"]["old_native_polygon_cache_hit"] is True
+    assert second_payload["timings"]["new_native_polygon_cache_hit"] is True
+    assert second_payload["backend"]["evidence_engine_selected"] == "gpu-polygon"
+    assert second_payload["exact_fallback"]["mode"] == "gpu-polygon-cuda-rect-coverage"
 
 
 def test_structural_guard_fast_path_attaches_exact_verification(tmp_path, monkeypatch):

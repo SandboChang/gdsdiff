@@ -22,6 +22,12 @@ class Backend(_StringEnum):
     METAL = "metal"
 
 
+class EvidenceEngine(_StringEnum):
+    AUTO = "auto"
+    GDSTK_ORACLE = "gdstk-oracle"
+    GPU_POLYGON = "gpu-polygon"
+
+
 class PathPolicy(_StringEnum):
     GDSTK = "gdstk"
     REJECT = "reject"

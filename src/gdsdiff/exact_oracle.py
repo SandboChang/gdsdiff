@@ -76,6 +76,7 @@ def run_full_exact_oracle(
     workers: int | None = None,
     component_partition: bool = False,
     component_executor: Callable[[tuple[ExactLayerTask, ...]], tuple[LayerExactDiff, ...]] | None = None,
+    force_small_component_partition: bool = False,
 ) -> ExactOracleResult:
     old_by_layer = _buffer_points_by_layer(old_buffer)
     new_by_layer = _buffer_points_by_layer(new_buffer)
@@ -90,6 +91,7 @@ def run_full_exact_oracle(
             worker_count,
             component_partition=component_partition,
             prefer_rectangle_pairs=component_executor is not None,
+            force_small_component_partition=force_small_component_partition,
         )
         for layer in selected_layers
     }
@@ -106,6 +108,8 @@ def run_full_exact_oracle(
     elif worker_count <= 1:
         diffs = tuple(
             _merge_layer_stripes(_exact_layer_diff_task(task) for task in tasks_by_layer[layer])
+            if tasks_by_layer[layer]
+            else LayerExactDiff(layer=layer)
             for layer in selected_layers
         )
     else:
@@ -122,7 +126,10 @@ def run_full_exact_oracle(
         by_layer: dict[LayerSpec, list[LayerExactDiff]] = {layer: [] for layer in selected_layers}
         for diff in stripe_diffs:
             by_layer[diff.layer].append(diff)
-        diffs = tuple(_merge_layer_stripes(by_layer[layer]) for layer in selected_layers)
+        diffs = tuple(
+            _merge_layer_stripes(by_layer[layer]) if by_layer[layer] else LayerExactDiff(layer=layer)
+            for layer in selected_layers
+        )
     return ExactOracleResult(tuple(sorted(diffs, key=lambda diff: diff.layer)))
 
 
@@ -142,11 +149,12 @@ def _layer_task_specs(
     worker_count: int,
     component_partition: bool = False,
     prefer_rectangle_pairs: bool = False,
+    force_small_component_partition: bool = False,
 ) -> tuple[ExactLayerTask, ...]:
     old_tuple = tuple(old_points)
     new_tuple = tuple(new_points)
     total = len(old_tuple) + len(new_tuple)
-    if worker_count <= 1 or total < 2048:
+    if not force_small_component_partition and (worker_count <= 1 or total < 2048):
         return (ExactLayerTask(layer, precision, old_tuple, new_tuple),)
     if component_partition:
         if prefer_rectangle_pairs:
@@ -156,9 +164,11 @@ def _layer_task_specs(
             sparse_rectangle_tasks = _sparse_rectangle_residual_task_specs(layer, old_tuple, new_tuple, precision)
             if sparse_rectangle_tasks is not None:
                 return sparse_rectangle_tasks
-        component_tasks = _component_task_specs(layer, old_tuple, new_tuple, precision)
-        if len(component_tasks) > 1 or (prefer_rectangle_pairs and component_tasks):
+        component_tasks, component_applicable = _component_task_specs_result(layer, old_tuple, new_tuple, precision)
+        if component_applicable and (prefer_rectangle_pairs or len(component_tasks) > 1 or not component_tasks):
             return component_tasks
+    if worker_count <= 1 or total < 2048:
+        return (ExactLayerTask(layer, precision, old_tuple, new_tuple),)
     bbox = _points_bbox(old_tuple + new_tuple)
     if bbox is None:
         return (ExactLayerTask(layer, precision, old_tuple, new_tuple),)
@@ -172,15 +182,24 @@ def _component_task_specs(
     new_tuple: tuple[tuple[tuple[int, int], ...], ...],
     precision: float,
 ) -> tuple[ExactLayerTask, ...]:
+    return _component_task_specs_result(layer, old_tuple, new_tuple, precision)[0]
+
+
+def _component_task_specs_result(
+    layer: LayerSpec,
+    old_tuple: tuple[tuple[tuple[int, int], ...], ...],
+    new_tuple: tuple[tuple[tuple[int, int], ...], ...],
+    precision: float,
+) -> tuple[tuple[ExactLayerTask, ...], bool]:
     components = _independent_bbox_components(old_tuple, new_tuple)
     if len(components) <= 1:
-        return ()
+        return (), False
     tasks = []
     for old_component, new_component in components:
-        if _is_identical_single_rectangle_component(old_component, new_component):
+        if _is_identical_component_source_set(old_component, new_component):
             continue
         tasks.append(ExactLayerTask(layer, precision, old_component, new_component, partition="bbox-component"))
-    return tuple(tasks)
+    return tuple(tasks), True
 
 
 def _rectangle_pair_task_specs(
@@ -237,8 +256,8 @@ def _sparse_rectangle_residual_task_specs(
         return None
     if not old_residual and not new_residual:
         return ()
-    component_tasks = _component_task_specs(layer, tuple(old_residual), tuple(new_residual), precision)
-    if component_tasks:
+    component_tasks, component_applicable = _component_task_specs_result(layer, tuple(old_residual), tuple(new_residual), precision)
+    if component_applicable:
         return component_tasks
     return (ExactLayerTask(layer, precision, tuple(old_residual), tuple(new_residual), partition="rectangle-residual"),)
 
@@ -291,6 +310,40 @@ def _is_identical_single_rectangle_component(
     old_rect = _axis_aligned_rectangle_bbox(old_component[0])
     new_rect = _axis_aligned_rectangle_bbox(new_component[0])
     return old_rect is not None and old_rect == new_rect
+
+
+def _is_identical_component_source_set(
+    old_component: tuple[tuple[tuple[int, int], ...], ...],
+    new_component: tuple[tuple[tuple[int, int], ...], ...],
+) -> bool:
+    if not old_component and not new_component:
+        return True
+    if _is_identical_single_rectangle_component(old_component, new_component):
+        return True
+    return {_canonical_polygon_key(points) for points in old_component} == {
+        _canonical_polygon_key(points) for points in new_component
+    }
+
+
+def _canonical_polygon_key(points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
+    cleaned = _clean_polygon_points(points)
+    if len(cleaned) < 2:
+        return cleaned
+    candidates = []
+    for sequence in (cleaned, tuple(reversed(cleaned))):
+        for index in range(len(sequence)):
+            candidates.append(sequence[index:] + sequence[:index])
+    return min(candidates)
+
+
+def _clean_polygon_points(points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
+    cleaned: list[tuple[int, int]] = []
+    for point in points:
+        if not cleaned or cleaned[-1] != point:
+            cleaned.append(point)
+    if len(cleaned) > 1 and cleaned[0] == cleaned[-1]:
+        cleaned.pop()
+    return tuple(cleaned)
 
 
 def _independent_bbox_components(
@@ -409,11 +462,15 @@ def _exact_layer_diff_task(
         old_minus = gdstk.boolean(old_minus, clip_rect, "and", precision=precision) or []
         new_minus = gdstk.boolean(new_minus, clip_rect, "and", precision=precision) or []
     xor = gdstk.boolean(old_minus, new_minus, "or", precision=precision) or []
+    old_fragments, new_fragments = _cancel_symmetric_direction_fragments(
+        _fragments_from_gdstk(old_minus, origin),
+        _fragments_from_gdstk(new_minus, origin),
+    )
     return LayerExactDiff(
         layer=layer,
-        old_minus_new=_fragments_from_gdstk(old_minus, origin),
-        new_minus_old=_fragments_from_gdstk(new_minus, origin),
-        xor=_fragments_from_gdstk(xor, origin),
+        old_minus_new=old_fragments,
+        new_minus_old=new_fragments,
+        xor=tuple(sorted(old_fragments + new_fragments, key=_fragment_sort_key)),
     )
 
 
@@ -428,6 +485,7 @@ def _merge_layer_stripes(stripes) -> LayerExactDiff:
     new_minus_points = tuple(fragment.points for stripe in stripes for fragment in stripe.new_minus_old)
     old_minus = _union_fragments(old_minus_points, layer)
     new_minus = _union_fragments(new_minus_points, layer)
+    old_minus, new_minus = _cancel_symmetric_direction_fragments(old_minus, new_minus)
     xor = _union_fragments(tuple(fragment.points for fragment in old_minus + new_minus), layer)
     return LayerExactDiff(layer=layer, old_minus_new=old_minus, new_minus_old=new_minus, xor=xor)
 
@@ -438,6 +496,43 @@ def _union_fragments(polygons: tuple[tuple[tuple[int, int], ...], ...], layer: L
     origin = _layer_origin(polygons)
     merged = gdstk.boolean(_to_gdstk_polygons(polygons, layer, origin), [], "or", precision=1.0) or []
     return _fragments_from_gdstk(merged, origin)
+
+
+def _cancel_symmetric_direction_fragments(
+    old_fragments: tuple[DiffFragment, ...],
+    new_fragments: tuple[DiffFragment, ...],
+) -> tuple[tuple[DiffFragment, ...], tuple[DiffFragment, ...]]:
+    if not old_fragments or not new_fragments:
+        return old_fragments, new_fragments
+    old_counts: dict[tuple[tuple[int, int, int, int], int, tuple[tuple[int, int], ...]], int] = {}
+    new_counts: dict[tuple[tuple[int, int, int, int], int, tuple[tuple[int, int], ...]], int] = {}
+    for fragment in old_fragments:
+        old_counts[_direction_fragment_key(fragment)] = old_counts.get(_direction_fragment_key(fragment), 0) + 1
+    for fragment in new_fragments:
+        new_counts[_direction_fragment_key(fragment)] = new_counts.get(_direction_fragment_key(fragment), 0) + 1
+    old_out = []
+    for fragment in old_fragments:
+        key = _direction_fragment_key(fragment)
+        if new_counts.get(key, 0):
+            new_counts[key] -= 1
+        else:
+            old_out.append(fragment)
+    new_out = []
+    for fragment in new_fragments:
+        key = _direction_fragment_key(fragment)
+        if old_counts.get(key, 0):
+            old_counts[key] -= 1
+        else:
+            new_out.append(fragment)
+    return tuple(old_out), tuple(new_out)
+
+
+def _direction_fragment_key(fragment: DiffFragment) -> tuple[tuple[int, int, int, int], int, tuple[tuple[int, int], ...]]:
+    return fragment.bbox, fragment.twice_area, _canonical_polygon_key(fragment.points)
+
+
+def _fragment_sort_key(fragment: DiffFragment) -> tuple[tuple[int, int, int, int], int, tuple[tuple[int, int], ...]]:
+    return fragment.bbox, fragment.twice_area, fragment.points
 
 
 def _bbox_rectangle(bbox: tuple[int, int, int, int], layer: LayerSpec, origin: tuple[int, int]) -> gdstk.Polygon:

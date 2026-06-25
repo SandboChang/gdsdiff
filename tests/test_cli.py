@@ -151,6 +151,142 @@ def test_cli_cuda_exact_component_backend_reports_stats_when_available(tmp_path)
     assert backend["stats"]["unsupported_tasks"] == 0
 
 
+def test_cli_gpu_polygon_engine_uses_exact_cuda_rect_coverage_for_rectangle_input(tmp_path):
+    old_path, new_path = _write_pair(tmp_path)
+    report_path = tmp_path / "report.json"
+    exact_diff_markdown_path = tmp_path / "exact_diff.md"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gds_tools_tk.gpu_compare",
+            str(old_path),
+            str(new_path),
+            "--backend",
+            "cuda",
+            "--evidence-engine",
+            "gpu-polygon",
+            "--json-report",
+            str(report_path),
+            "--exact-diff-markdown",
+            str(exact_diff_markdown_path),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 1
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    assert data["status"] == "unexpected-differences"
+    assert data["backend"]["evidence_engine_selected"] == "gpu-polygon"
+    assert data["backend"]["gpu_polygon_available"] is True
+    assert data["backend"]["gpu_coverage_engine"] == "cuda-rect-coverage"
+    assert data["backend"]["cuda_kernel_count"] > 0
+    assert data["backend"]["transferred_bytes"] > 0
+    assert data["exact_fallback"]["mode"] == "gpu-polygon-cuda-rect-coverage"
+    assert data["exact_fallback"]["gpu_coverage"]["cuda_task_count"] > 0
+    assert data["exact_verification_complete"] is True
+    markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
+    assert "- exact_verification_complete: `true`" in markdown
+
+
+def test_cli_gpu_polygon_engine_uses_component_fragments_for_non_rectangle_without_audit(tmp_path):
+    old_path = tmp_path / "old_tri.gds"
+    new_path = tmp_path / "new_tri.gds"
+    old_lib = gdstk.Library(unit=1e-6, precision=1e-9)
+    old_top = old_lib.new_cell("top")
+    old_top.add(gdstk.Polygon([(0, 0), (1, 0), (0, 1)], layer=1, datatype=0))
+    old_lib.write_gds(old_path)
+    new_lib = gdstk.Library(unit=1e-6, precision=1e-9)
+    new_top = new_lib.new_cell("top")
+    new_top.add(gdstk.Polygon([(0, 0), (2, 0), (0, 1)], layer=1, datatype=0))
+    new_lib.write_gds(new_path)
+    report_path = tmp_path / "report.json"
+    exact_diff_markdown_path = tmp_path / "exact_diff.md"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gds_tools_tk.gpu_compare",
+            str(old_path),
+            str(new_path),
+            "--backend",
+            "cuda",
+            "--evidence-engine",
+            "gpu-polygon",
+            "--json-report",
+            str(report_path),
+            "--exact-diff-markdown",
+            str(exact_diff_markdown_path),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 1
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    assert data["status"] == "unexpected-differences"
+    assert data["backend"]["gpu_polygon_available"] is True
+    assert data["backend"]["gpu_record_delta_available"] is True
+    assert data["backend"]["canonical_surplus_coverage_available"] is True
+    assert data["backend"]["canonical_surplus_coverage_exact"] is False
+    assert data["exact_fallback"]["mode"] == "gpu-polygon-cuda-component-fragments"
+    assert data["exact_fallback"]["engine_status"] == "polygon-fragment-complete-host-records"
+    assert data["exact_fallback"]["gpu_polygon_component_area"]["gpu_trapezoid_fragments_available"] is True
+    assert data["exact_verification_complete"] is True
+    markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
+    assert "GPU Component Fragment Evidence" in markdown
+    assert "- exact_boundary_loops_available: `false`" in markdown
+
+
+def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
+    old_path, new_path = _write_pair(tmp_path)
+    report_path = tmp_path / "report.json"
+    exact_diff_markdown_path = tmp_path / "exact_diff.md"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gds_tools_tk.gpu_compare",
+            str(old_path),
+            str(new_path),
+            "--backend",
+            "cuda",
+            "--evidence-engine",
+            "gpu-polygon",
+            "--audit-cpu-oracle",
+            "--json-report",
+            str(report_path),
+            "--exact-diff-markdown",
+            str(exact_diff_markdown_path),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 1
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    assert data["status"] == "unexpected-differences"
+    assert data["backend"]["evidence_engine_selected"] == "gpu-polygon"
+    assert data["backend"]["gpu_polygon_available"] is True
+    assert data["backend"]["audit_cpu_oracle"] is True
+    assert data["backend"]["cuda_kernel_count"] > 0
+    assert data["exact_fallback"]["mode"] == "gpu-polygon-cuda-rect-coverage"
+    assert data["exact_fallback"]["audit_cpu_oracle"] is True
+    assert data["exact_fallback"]["cpu_oracle_audit"]["match"] is True
+    assert data["exact_verification_complete"] is True
+    assert data["timings"]["cpu_oracle_audit_s"] >= 0
+    markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
+    assert "- exact_verification_complete: `true`" in markdown
+    assert "vertices_preview_dbu" in markdown
+
+
 def test_cli_returns_two_for_invalid_input(tmp_path):
     completed = subprocess.run(
         [sys.executable, "-m", "gds_tools_tk.gpu_compare", str(tmp_path / "missing.gds"), str(tmp_path / "also_missing.gds")],

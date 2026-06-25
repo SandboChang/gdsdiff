@@ -28,7 +28,7 @@ from .native import CUDA_ARCH_ENV, NativeCapabilities, discover_native_capabilit
 from .policy import ClassifiedComponent, LayerPolicyResult, PolicyClassificationResult, classify_exact_differences
 from .profiles import AssemblyProfile, CombinedProfileSummary, ProfileCheck, ProfileResult, calibrator_model1_profile, check_assembly_profile, combined_profile_summary
 from .report import CompareReport, ComponentSummary, LayerReport, build_layer_reports, validate_report_dict
-from .semantics import Backend, CompareStatus, DifferenceDirection, FailurePolicy, PathPolicy, exit_code_for_status
+from .semantics import Backend, CompareStatus, DifferenceDirection, EvidenceEngine, FailurePolicy, PathPolicy, exit_code_for_status
 from .spatial import SpatialIndex, bbox_union, bboxes_intersect, expand_bbox
 from .tiling import CpuTilePrefilterResult, OversizedPolygon, TileConfig, TileKey, bbox_tile_range, floor_div, run_cpu_tile_prefilter
 from .windowed_exact import WindowedExactFailure, WindowedExactResult, run_windowed_exact_oracle
@@ -51,6 +51,7 @@ __all__ = [
     "CpuTilePrefilterResult",
     "DesignHistoryEntry",
     "DifferenceDirection",
+    "EvidenceEngine",
     "DiffGdsWriteResult",
     "DiffFragment",
     "ExactOracleResult",

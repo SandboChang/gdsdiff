@@ -14,6 +14,7 @@ from .semantics import DifferenceDirection
 
 DEFAULT_VERTEX_INLINE_LIMIT = 8
 DEFAULT_INVENTORY_RECORD_LIMIT = 0
+DEFAULT_COMPONENT_RECORD_LIMIT = 100
 DEFAULT_COMPONENT_DETAIL_MODE = "compact"
 DEFAULT_DIGEST_COMPONENT_LIMIT = 8
 
@@ -83,7 +84,7 @@ def render_exact_diff_markdown(
     source_mode: str = "exact",
     exact_verification_complete: bool = True,
     polygon_inventory_delta: PolygonInventoryDelta | None = None,
-    component_limit: int | None = None,
+    component_limit: int | None = DEFAULT_COMPONENT_RECORD_LIMIT,
     vertex_limit: int | None = DEFAULT_VERTEX_INLINE_LIMIT,
     inventory_limit: int | None = DEFAULT_INVENTORY_RECORD_LIMIT,
     component_detail_mode: str = DEFAULT_COMPONENT_DETAIL_MODE,
@@ -257,7 +258,7 @@ def write_exact_diff_markdown(
     source_mode: str = "exact",
     exact_verification_complete: bool = True,
     polygon_inventory_delta: PolygonInventoryDelta | None = None,
-    component_limit: int | None = None,
+    component_limit: int | None = DEFAULT_COMPONENT_RECORD_LIMIT,
     vertex_limit: int | None = DEFAULT_VERTEX_INLINE_LIMIT,
     inventory_limit: int | None = DEFAULT_INVENTORY_RECORD_LIMIT,
     component_detail_mode: str = DEFAULT_COMPONENT_DETAIL_MODE,
