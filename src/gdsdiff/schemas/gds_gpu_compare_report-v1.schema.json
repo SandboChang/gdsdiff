@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gds_gpu_compare_report-v1.schema.json",
+  "title": "GDS GPU Compare Report v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "tool_version",
+    "status",
+    "exit_code_category",
+    "exact_verification_complete",
+    "old_input",
+    "new_input",
+    "semantics",
+    "selection",
+    "backend",
+    "prefilter",
+    "exact_fallback",
+    "layers",
+    "allowed_policy",
+    "unexpected_summary",
+    "timings",
+    "memory",
+    "warnings",
+    "errors",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": { "const": "gds-gpu-compare-report-v1" },
+    "tool_version": { "type": "string" },
+    "command": { "type": "array", "items": { "type": "string" } },
+    "status": {
+      "enum": [
+        "equivalent",
+        "expected-differences-only",
+        "unexpected-differences",
+        "unresolved",
+        "invalid-input",
+        "backend-error",
+        "artifact-error"
+      ]
+    },
+    "exit_code_category": { "enum": [0, 1, 2] },
+    "exact_verification_complete": { "type": "boolean" },
+    "old_input": { "type": "object" },
+    "new_input": { "type": "object" },
+    "semantics": { "type": "object" },
+    "selection": { "type": "object" },
+    "backend": { "type": "object" },
+    "prefilter": { "type": "object" },
+    "exact_fallback": { "type": "object" },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "layer",
+          "datatype",
+          "present_old",
+          "present_new",
+          "xor_area_dbu2",
+          "old_minus_new_area_dbu2",
+          "new_minus_old_area_dbu2",
+          "expected_area_dbu2",
+          "unexpected_area_dbu2",
+          "exact_status"
+        ],
+        "properties": {
+          "layer": { "type": "integer", "minimum": 0 },
+          "datatype": { "type": "integer", "minimum": 0 },
+          "present_old": { "type": "boolean" },
+          "present_new": { "type": "boolean" },
+          "polygon_count_old": { "type": "integer", "minimum": 0 },
+          "polygon_count_new": { "type": "integer", "minimum": 0 },
+          "candidate_tile_count": { "type": "integer", "minimum": 0 },
+          "exact_window_count": { "type": "integer", "minimum": 0 },
+          "xor_area_dbu2": { "type": "string", "pattern": "^-?[0-9]+(\\.5)?$" },
+          "old_minus_new_area_dbu2": { "type": "string", "pattern": "^-?[0-9]+(\\.5)?$" },
+          "new_minus_old_area_dbu2": { "type": "string", "pattern": "^-?[0-9]+(\\.5)?$" },
+          "expected_area_dbu2": { "type": "string", "pattern": "^-?[0-9]+(\\.5)?$" },
+          "unexpected_area_dbu2": { "type": "string", "pattern": "^-?[0-9]+(\\.5)?$" },
+          "components": { "type": "array" },
+          "truncated_component_count": { "type": "integer", "minimum": 0 },
+          "exact_status": { "type": "string" }
+        }
+      }
+    },
+    "allowed_policy": { "type": "object" },
+    "unexpected_summary": { "type": "object" },
+    "timings": { "type": "object" },
+    "memory": { "type": "object" },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "errors": { "type": "array", "items": { "type": "string" } },
+    "artifacts": { "type": "object" }
+  }
+}
