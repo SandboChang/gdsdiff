@@ -8,6 +8,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -156,6 +157,104 @@ std::uint32_t polygon_flags(const std::vector<Point>& points) {
         flags |= 2u;
     }
     return flags;
+}
+
+std::uint64_t fnv1a_u64(std::uint64_t hash, std::uint64_t value) {
+    constexpr std::uint64_t prime = 1099511628211ull;
+    for (int i = 0; i < 8; ++i) {
+        hash ^= (value >> (i * 8)) & 0xffu;
+        hash *= prime;
+    }
+    return hash;
+}
+
+bool point_less(const Point& left, const Point& right) {
+    return left.x < right.x || (left.x == right.x && left.y < right.y);
+}
+
+std::size_t sequence_index(std::size_t count, std::size_t candidate, std::size_t step, bool forward) {
+    if (forward) {
+        return (candidate + step) % count;
+    }
+    return (candidate + count - (step % count)) % count;
+}
+
+bool sequence_less(
+    const std::vector<Point>& points,
+    std::size_t left_candidate,
+    bool left_forward,
+    std::size_t right_candidate,
+    bool right_forward) {
+    const std::size_t count = points.size();
+    for (std::size_t step = 0; step < count; ++step) {
+        const auto& left = points[sequence_index(count, left_candidate, step, left_forward)];
+        const auto& right = points[sequence_index(count, right_candidate, step, right_forward)];
+        if (point_less(left, right)) {
+            return true;
+        }
+        if (point_less(right, left)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool is_axis_aligned_bbox_rectangle(const Polygon& polygon) {
+    if (polygon.points.size() != 4 || polygon.bbox.x0 >= polygon.bbox.x1 || polygon.bbox.y0 >= polygon.bbox.y1) {
+        return false;
+    }
+    bool corners[4] = {false, false, false, false};
+    for (const auto& point : polygon.points) {
+        int corner = -1;
+        if (point.x == polygon.bbox.x0 && point.y == polygon.bbox.y0) corner = 0;
+        if (point.x == polygon.bbox.x0 && point.y == polygon.bbox.y1) corner = 1;
+        if (point.x == polygon.bbox.x1 && point.y == polygon.bbox.y0) corner = 2;
+        if (point.x == polygon.bbox.x1 && point.y == polygon.bbox.y1) corner = 3;
+        if (corner < 0 || corners[corner]) {
+            return false;
+        }
+        corners[corner] = true;
+    }
+    return corners[0] && corners[1] && corners[2] && corners[3];
+}
+
+std::pair<std::uint64_t, std::uint64_t> canonical_polygon_hash(const Polygon& polygon) {
+    std::uint64_t h0 = 1469598103934665603ull;
+    std::uint64_t h1 = 1099511628211ull;
+    const auto& points = polygon.points;
+    if (polygon.flags == 0 && is_axis_aligned_bbox_rectangle(polygon)) {
+        h0 = fnv1a_u64(fnv1a_u64(h0, 2), 0);
+        h0 = fnv1a_u64(fnv1a_u64(h0, static_cast<std::uint64_t>(polygon.bbox.x0)), static_cast<std::uint64_t>(polygon.bbox.y0));
+        h0 = fnv1a_u64(fnv1a_u64(h0, static_cast<std::uint64_t>(polygon.bbox.x1)), static_cast<std::uint64_t>(polygon.bbox.y1));
+        h1 = fnv1a_u64(fnv1a_u64(h1, static_cast<std::uint64_t>(polygon.bbox.y1)), static_cast<std::uint64_t>(polygon.bbox.x1));
+        h1 = fnv1a_u64(fnv1a_u64(h1, static_cast<std::uint64_t>(polygon.bbox.y0)), static_cast<std::uint64_t>(polygon.bbox.x0));
+        return {h0, h1};
+    }
+    std::size_t best_candidate = 0;
+    bool best_forward = true;
+    if (polygon.flags == 0 && !points.empty()) {
+        for (std::size_t candidate = 1; candidate < points.size(); ++candidate) {
+            if (sequence_less(points, candidate, true, best_candidate, best_forward)) {
+                best_candidate = candidate;
+                best_forward = true;
+            }
+        }
+        for (std::size_t candidate = 0; candidate < points.size(); ++candidate) {
+            if (sequence_less(points, candidate, false, best_candidate, best_forward)) {
+                best_candidate = candidate;
+                best_forward = false;
+            }
+        }
+    }
+    for (std::size_t step = 0; step < points.size(); ++step) {
+        const std::size_t index = polygon.flags == 0 ? sequence_index(points.size(), best_candidate, step, best_forward) : step;
+        const auto& point = points[index];
+        const auto x = static_cast<std::uint64_t>(point.x);
+        const auto y = static_cast<std::uint64_t>(point.y);
+        h0 = fnv1a_u64(fnv1a_u64(h0, x), y);
+        h1 = fnv1a_u64(fnv1a_u64(h1, y), x);
+    }
+    return {h0, h1};
 }
 
 std::map<std::string, Cell> parse_gds(const char* path) {
@@ -393,6 +492,7 @@ struct GdsPolygonExtractResult {
     std::int64_t* bboxes;
     std::uint32_t* flags;
     std::uint64_t* source_ids;
+    std::uint64_t* hashes;
 };
 
 const char* gds_polygon_extract_last_error() {
@@ -410,6 +510,7 @@ void gds_polygon_extract_free(GdsPolygonExtractResult* result) {
     std::free(result->bboxes);
     std::free(result->flags);
     std::free(result->source_ids);
+    std::free(result->hashes);
     *result = GdsPolygonExtractResult{};
 }
 

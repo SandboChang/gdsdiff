@@ -5,8 +5,6 @@ import multiprocessing as mp
 from dataclasses import dataclass, field
 from typing import Callable
 
-import gdstk
-
 from .config import LayerSpec
 from .geometry import PolygonBuffer, polygon_bbox, polygon_twice_area
 from .grid import snap_to_grid
@@ -435,6 +433,8 @@ def _bbox_overlaps_closed(left: tuple[int, int, int, int], right: tuple[int, int
 def _exact_layer_diff_task(
     task: ExactLayerTask,
 ) -> LayerExactDiff:
+    import gdstk
+
     layer = task.layer
     if task.old_points is None or task.new_points is None:
         if _WORKER_OLD_BY_LAYER is None or _WORKER_NEW_BY_LAYER is None:
@@ -493,6 +493,8 @@ def _merge_layer_stripes(stripes) -> LayerExactDiff:
 def _union_fragments(polygons: tuple[tuple[tuple[int, int], ...], ...], layer: LayerSpec) -> tuple[DiffFragment, ...]:
     if not polygons:
         return ()
+    import gdstk
+
     origin = _layer_origin(polygons)
     merged = gdstk.boolean(_to_gdstk_polygons(polygons, layer, origin), [], "or", precision=1.0) or []
     return _fragments_from_gdstk(merged, origin)
@@ -536,6 +538,8 @@ def _fragment_sort_key(fragment: DiffFragment) -> tuple[tuple[int, int, int, int
 
 
 def _bbox_rectangle(bbox: tuple[int, int, int, int], layer: LayerSpec, origin: tuple[int, int]) -> gdstk.Polygon:
+    import gdstk
+
     ox, oy = origin
     x0, y0, x1, y1 = bbox
     return gdstk.rectangle((x0 - ox, y0 - oy), (x1 + 1 - ox, y1 + 1 - oy), layer=layer.layer, datatype=layer.datatype)
@@ -612,6 +616,8 @@ def _to_gdstk_polygons(
     layer: LayerSpec,
     origin: tuple[int, int],
 ) -> list[gdstk.Polygon]:
+    import gdstk
+
     ox, oy = origin
     return [
         gdstk.Polygon([(x - ox, y - oy) for x, y in points], layer=layer.layer, datatype=layer.datatype)

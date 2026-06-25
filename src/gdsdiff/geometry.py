@@ -35,6 +35,7 @@ class PolygonBuffer:
     flags: np.ndarray
     source_ids: np.ndarray
     layer_table: LayerTable
+    polygon_hashes: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.vertices_xy.dtype != np.int64 or self.vertices_xy.ndim != 2 or self.vertices_xy.shape[1] != 2:
@@ -49,6 +50,10 @@ class PolygonBuffer:
             raise TypeError("flags must be a uint32 vector with one entry per polygon")
         if self.source_ids.dtype != np.uint64 or self.source_ids.shape != (self.polygon_count,):
             raise TypeError("source_ids must be a uint64 vector with one entry per polygon")
+        if self.polygon_hashes is not None and (
+            self.polygon_hashes.dtype != np.uint64 or self.polygon_hashes.shape != (self.polygon_count, 2)
+        ):
+            raise TypeError("polygon_hashes must be a uint64 array with shape (N_polygons, 2)")
         if len(self.polygon_offsets) != self.polygon_count + 1:
             raise ValueError("polygon_offsets length must be polygon_count + 1")
         if len(self.polygon_offsets) and int(self.polygon_offsets[0]) != 0:

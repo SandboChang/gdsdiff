@@ -26,6 +26,7 @@ class _CPolygonExtractResult(ctypes.Structure):
         ("bboxes", ctypes.POINTER(ctypes.c_int64)),
         ("flags", ctypes.POINTER(ctypes.c_uint32)),
         ("source_ids", ctypes.POINTER(ctypes.c_uint64)),
+        ("hashes", ctypes.POINTER(ctypes.c_uint64)),
     ]
 
 

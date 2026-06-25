@@ -1,132 +1,119 @@
 """GPU-assisted GDS geometry comparison tools."""
-from .api import CompareRunResult, compare_gds_files, compare_gds_paths
-from .config import AllowedRegion, CompareConfig, GridSpec, LayerSpec, parse_layer_selector
-from .canonicalize import CanonicalRecord, InternResult, canonicalize_polygon, intern_polygons
-from .design_history import DesignHistoryEntry, render_design_history_entry
-from .diff_gds import DiffGdsWriteResult, write_diff_gds
-from .exact_diff_markdown import (
-    ExactDiffMarkdownWriteResult,
-    PolygonInventoryDelta,
-    PolygonInventoryRecord,
-    build_polygon_inventory_delta,
-    render_exact_diff_markdown,
-    write_exact_diff_markdown,
-)
-from .extract import ExtractionResult, ExtractionStats, extract_gds_polygons
-from .exact_oracle import DiffFragment, ExactLayerTask, ExactOracleResult, LayerExactDiff, format_twice_area, run_full_exact_oracle
-from .gds_metadata import GdsMetadata, read_gds_metadata
-from .grid import GridResolution, resolve_comparison_grid, snap_to_grid, validate_int64_coordinate
-from .hierarchy import CellIdentity, HierarchyCompareResult, ReferenceChange, canonical_cell_identity, compare_hierarchy
-from .hierarchy_extract import (
-    WindowedHierarchyExtractionResult,
-    WindowedHierarchyStats,
-    extract_hierarchy_window,
-    extract_hierarchy_window_from_gds,
-)
-from .inventory import GdsInventory, RecordInventory, SelectedLayerPresence, inventory_gds, resolve_selected_layers
-from .native import CUDA_ARCH_ENV, NativeCapabilities, discover_native_capabilities
-from .policy import ClassifiedComponent, LayerPolicyResult, PolicyClassificationResult, classify_exact_differences
-from .profiles import AssemblyProfile, CombinedProfileSummary, ProfileCheck, ProfileResult, calibrator_model1_profile, check_assembly_profile, combined_profile_summary
-from .report import CompareReport, ComponentSummary, LayerReport, build_layer_reports, validate_report_dict
-from .semantics import Backend, CompareStatus, DifferenceDirection, EvidenceEngine, FailurePolicy, PathPolicy, exit_code_for_status
-from .spatial import SpatialIndex, bbox_union, bboxes_intersect, expand_bbox
-from .tiling import CpuTilePrefilterResult, OversizedPolygon, TileConfig, TileKey, bbox_tile_range, floor_div, run_cpu_tile_prefilter
-from .windowed_exact import WindowedExactFailure, WindowedExactResult, run_windowed_exact_oracle
-from .windows import CandidateWindow, WindowConfig, build_candidate_windows
+from __future__ import annotations
 
-__all__ = [
-    "AllowedRegion",
-    "AssemblyProfile",
-    "Backend",
-    "CandidateWindow",
-    "CellIdentity",
-    "CanonicalRecord",
-    "ClassifiedComponent",
-    "CompareConfig",
-    "CompareReport",
-    "CompareRunResult",
-    "CompareStatus",
-    "CombinedProfileSummary",
-    "ComponentSummary",
-    "CpuTilePrefilterResult",
-    "DesignHistoryEntry",
-    "DifferenceDirection",
-    "EvidenceEngine",
-    "DiffGdsWriteResult",
-    "DiffFragment",
-    "ExactOracleResult",
-    "ExactDiffMarkdownWriteResult",
-    "ExactLayerTask",
-    "PolygonInventoryDelta",
-    "PolygonInventoryRecord",
-    "ExtractionResult",
-    "ExtractionStats",
-    "FailurePolicy",
-    "GdsMetadata",
-    "GridSpec",
-    "GridResolution",
-    "GdsInventory",
-    "HierarchyCompareResult",
-    "InternResult",
-    "LayerReport",
-    "LayerExactDiff",
-    "LayerPolicyResult",
-    "LayerSpec",
-    "NativeCapabilities",
-    "OversizedPolygon",
-    "PathPolicy",
-    "PolicyClassificationResult",
-    "ProfileCheck",
-    "ProfileResult",
-    "RecordInventory",
-    "ReferenceChange",
-    "SelectedLayerPresence",
-    "SpatialIndex",
-    "TileConfig",
-    "TileKey",
-    "WindowConfig",
-    "WindowedHierarchyExtractionResult",
-    "WindowedHierarchyStats",
-    "WindowedExactFailure",
-    "WindowedExactResult",
-    "CUDA_ARCH_ENV",
-    "bbox_union",
-    "bbox_tile_range",
-    "bboxes_intersect",
-    "build_candidate_windows",
-    "build_layer_reports",
-    "build_polygon_inventory_delta",
-    "calibrator_model1_profile",
-    "canonical_cell_identity",
-    "classify_exact_differences",
-    "check_assembly_profile",
-    "combined_profile_summary",
-    "compare_gds_files",
-    "compare_gds_paths",
-    "compare_hierarchy",
-    "discover_native_capabilities",
-    "expand_bbox",
-    "extract_hierarchy_window",
-    "extract_hierarchy_window_from_gds",
-    "exit_code_for_status",
-    "floor_div",
-    "extract_gds_polygons",
-    "canonicalize_polygon",
-    "intern_polygons",
-    "format_twice_area",
-    "inventory_gds",
-    "parse_layer_selector",
-    "read_gds_metadata",
-    "render_design_history_entry",
-    "render_exact_diff_markdown",
-    "resolve_selected_layers",
-    "resolve_comparison_grid",
-    "run_full_exact_oracle",
-    "run_windowed_exact_oracle",
-    "run_cpu_tile_prefilter",
-    "snap_to_grid",
-    "validate_int64_coordinate",
-    "validate_report_dict",
-    "write_diff_gds",
-    "write_exact_diff_markdown",
-]
+from importlib import import_module
+from typing import Any
+
+_EXPORT_MODULES = {
+    "AllowedRegion": ".config",
+    "AssemblyProfile": ".profiles",
+    "Backend": ".semantics",
+    "CandidateWindow": ".windows",
+    "CellIdentity": ".hierarchy",
+    "CanonicalRecord": ".canonicalize",
+    "ClassifiedComponent": ".policy",
+    "CompareConfig": ".config",
+    "CompareReport": ".report",
+    "CompareRunResult": ".api",
+    "CompareStatus": ".semantics",
+    "CombinedProfileSummary": ".profiles",
+    "ComponentSummary": ".report",
+    "CpuTilePrefilterResult": ".tiling",
+    "DesignHistoryEntry": ".design_history",
+    "DifferenceDirection": ".semantics",
+    "DiffFragment": ".exact_oracle",
+    "DiffGdsWriteResult": ".diff_gds",
+    "EvidenceEngine": ".semantics",
+    "ExactDiffMarkdownWriteResult": ".exact_diff_markdown",
+    "ExactLayerTask": ".exact_oracle",
+    "ExactOracleResult": ".exact_oracle",
+    "ExtractionResult": ".extract",
+    "ExtractionStats": ".extract",
+    "FailurePolicy": ".semantics",
+    "GdsInventory": ".inventory",
+    "GdsMetadata": ".gds_metadata",
+    "GridResolution": ".grid",
+    "GridSpec": ".config",
+    "HierarchyCompareResult": ".hierarchy",
+    "InternResult": ".canonicalize",
+    "LayerExactDiff": ".exact_oracle",
+    "LayerPolicyResult": ".policy",
+    "LayerReport": ".report",
+    "LayerSpec": ".config",
+    "NativeCapabilities": ".native",
+    "OversizedPolygon": ".tiling",
+    "PathPolicy": ".semantics",
+    "PolicyClassificationResult": ".policy",
+    "PolygonInventoryDelta": ".exact_diff_markdown",
+    "PolygonInventoryRecord": ".exact_diff_markdown",
+    "ProfileCheck": ".profiles",
+    "ProfileResult": ".profiles",
+    "RecordInventory": ".inventory",
+    "ReferenceChange": ".hierarchy",
+    "SelectedLayerPresence": ".inventory",
+    "SpatialIndex": ".spatial",
+    "TileConfig": ".tiling",
+    "TileKey": ".tiling",
+    "WindowConfig": ".windows",
+    "WindowedExactFailure": ".windowed_exact",
+    "WindowedExactResult": ".windowed_exact",
+    "WindowedHierarchyExtractionResult": ".hierarchy_extract",
+    "WindowedHierarchyStats": ".hierarchy_extract",
+    "CUDA_ARCH_ENV": ".native",
+    "bbox_tile_range": ".tiling",
+    "bbox_union": ".spatial",
+    "bboxes_intersect": ".spatial",
+    "build_candidate_windows": ".windows",
+    "build_layer_reports": ".report",
+    "build_polygon_inventory_delta": ".exact_diff_markdown",
+    "build_polygon_inventory_delta_from_record_delta": ".exact_diff_markdown",
+    "calibrator_model1_profile": ".profiles",
+    "canonical_cell_identity": ".hierarchy",
+    "canonicalize_polygon": ".canonicalize",
+    "check_assembly_profile": ".profiles",
+    "classify_exact_differences": ".policy",
+    "combined_profile_summary": ".profiles",
+    "compare_gds_files": ".api",
+    "compare_gds_paths": ".api",
+    "compare_hierarchy": ".hierarchy",
+    "discover_native_capabilities": ".native",
+    "exit_code_for_status": ".semantics",
+    "expand_bbox": ".spatial",
+    "extract_gds_polygons": ".extract",
+    "extract_hierarchy_window": ".hierarchy_extract",
+    "extract_hierarchy_window_from_gds": ".hierarchy_extract",
+    "floor_div": ".tiling",
+    "format_twice_area": ".exact_oracle",
+    "intern_polygons": ".canonicalize",
+    "inventory_gds": ".inventory",
+    "parse_layer_selector": ".config",
+    "read_gds_metadata": ".gds_metadata",
+    "render_design_history_entry": ".design_history",
+    "render_exact_diff_markdown": ".exact_diff_markdown",
+    "resolve_comparison_grid": ".grid",
+    "resolve_selected_layers": ".inventory",
+    "run_cpu_tile_prefilter": ".tiling",
+    "run_full_exact_oracle": ".exact_oracle",
+    "run_windowed_exact_oracle": ".windowed_exact",
+    "snap_to_grid": ".grid",
+    "validate_int64_coordinate": ".grid",
+    "validate_report_dict": ".report",
+    "write_diff_gds": ".diff_gds",
+    "write_exact_diff_markdown": ".exact_diff_markdown",
+}
+
+__all__ = sorted(_EXPORT_MODULES)
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(module_name, __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted((*globals(), *__all__))

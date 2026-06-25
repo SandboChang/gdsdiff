@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import gdstk
 import gds_tools_tk.gpu_compare.api as api_module
 import pytest
@@ -61,6 +64,44 @@ def _write_unsupported_polygon_pair(tmp_path):
     old.write_gds(old_path)
     new.write_gds(new_path)
     return old_path, new_path
+
+
+def _write_polygon_case(tmp_path, name: str, old_polygons, new_polygons):
+    old_path = tmp_path / f"{name}_old.gds"
+    new_path = tmp_path / f"{name}_new.gds"
+    old = gdstk.Library(unit=1e-6, precision=1e-6)
+    new = gdstk.Library(unit=1e-6, precision=1e-6)
+    old_top = old.new_cell("top")
+    new_top = new.new_cell("top")
+    for points, layer, datatype in old_polygons:
+        old_top.add(gdstk.Polygon(points, layer=layer, datatype=datatype))
+    for points, layer, datatype in new_polygons:
+        new_top.add(gdstk.Polygon(points, layer=layer, datatype=datatype))
+    old.write_gds(old_path)
+    new.write_gds(new_path)
+    return old_path, new_path
+
+
+def _run_gpu_polygon_case(old_path, new_path, markdown_path):
+    if not cuda_ctypes_available():
+        pytest.skip("CUDA ctypes backend is not available")
+    result = compare_gds_files(
+        CompareConfig(old_path, new_path, backend="cuda", evidence_engine="gpu-polygon"),
+        exact_diff_markdown_path=markdown_path,
+    )
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert len(markdown.splitlines()) <= 200
+    assert "## Agent Minimal Read" in markdown
+    assert "## Polygon Components" in markdown
+    assert "## Input Polygon Inventory Delta" in markdown
+    assert "points_sha256" in markdown
+    payload = result.report.to_json_dict()
+    assert payload["artifacts"]["vertex_sidecar"]
+    sidecar_path = Path(payload["artifacts"]["vertex_sidecar"])
+    assert sidecar_path.exists()
+    sidecar_records = [json.loads(line) for line in sidecar_path.read_text(encoding="utf-8").splitlines()]
+    assert all(record["vertices_dbu"] for record in sidecar_records)
+    return result, result.report.to_json_dict(), markdown
 
 
 def test_public_api_equivalent_pair_returns_zero_exit(tmp_path):
@@ -417,13 +458,118 @@ def test_gpu_polygon_can_reuse_native_polygon_cache(tmp_path):
     first_payload = first.report.to_json_dict()
     second_payload = second.report.to_json_dict()
 
-    assert first.status == second.status == CompareStatus.UNEXPECTED_DIFFERENCES
+    assert first.status == second.status == CompareStatus.DIFFERENCES_FOUND
     assert first_payload["timings"]["old_native_polygon_cache_hit"] is False
     assert first_payload["timings"]["new_native_polygon_cache_hit"] is False
     assert second_payload["timings"]["old_native_polygon_cache_hit"] is True
     assert second_payload["timings"]["new_native_polygon_cache_hit"] is True
     assert second_payload["backend"]["evidence_engine_selected"] == "gpu-polygon"
     assert second_payload["exact_fallback"]["mode"] == "gpu-polygon-cuda-rect-coverage"
+
+
+def test_gpu_polygon_reports_complete_layer_removal_in_compact_diff(tmp_path):
+    old_path, new_path = _write_polygon_case(
+        tmp_path,
+        "layer_removed",
+        old_polygons=(
+            (((0, 0), (3, 0), (3, 2), (0, 2)), 9, 0),
+            (((10, 0), (12, 0), (12, 2), (10, 2)), 1, 0),
+        ),
+        new_polygons=(
+            (((10, 0), (12, 0), (12, 2), (10, 2)), 1, 0),
+        ),
+    )
+
+    result, payload, markdown = _run_gpu_polygon_case(old_path, new_path, tmp_path / "layer_removed_diff.md")
+
+    assert result.status == CompareStatus.DIFFERENCES_FOUND
+    assert payload["status"] == "differences-found"
+    assert payload["evidence_status"] == "differences-found"
+    assert payload["exact_verification_complete"] is True
+    assert payload["unexpected_summary"]["unexpected_area_dbu2"] == "6"
+    assert payload["inventory_delta_count"] == 1
+    assert any(layer["layer"] == 9 and layer["datatype"] == 0 for layer in payload["layers"])
+    assert "`coverage_before_only` | 9 | 0" in markdown
+    assert "`inventory_before_only` | 9 | 0" in markdown
+    assert "[0,0,3,2]" in markdown
+
+
+def test_gpu_polygon_reports_missing_vertex_polygon_change_in_compact_diff(tmp_path):
+    old_path, new_path = _write_polygon_case(
+        tmp_path,
+        "missing_vertex",
+        old_polygons=(
+            (((0, 0), (4, 0), (4, 4), (2, 5), (0, 4)), 7, 0),
+        ),
+        new_polygons=(
+            (((0, 0), (4, 0), (4, 4), (0, 4)), 7, 0),
+        ),
+    )
+
+    result, payload, markdown = _run_gpu_polygon_case(old_path, new_path, tmp_path / "missing_vertex_diff.md")
+
+    assert result.status == CompareStatus.DIFFERENCES_FOUND
+    assert payload["exact_verification_complete"] is True
+    assert payload["exact_fallback"]["mode"] == "gpu-polygon-cuda-source-edge-records"
+    assert payload["unexpected_summary"]["unexpected_area_dbu2"] == "2"
+    assert payload["inventory_delta_count"] == 2
+    assert "`coverage_before_only` | 7 | 0" in markdown
+    assert "`inventory_before_only` | 7 | 0" in markdown
+    assert "`inventory_after_only` | 7 | 0" in markdown
+    assert "[0,4,4,5]" in markdown
+    assert "[2,5]" in markdown
+
+
+def test_gpu_polygon_reports_one_dbu_area_change_in_compact_diff(tmp_path):
+    old_path, new_path = _write_polygon_case(
+        tmp_path,
+        "one_dbu_area",
+        old_polygons=(
+            (((0, 0), (2, 0), (2, 2), (0, 2)), 5, 0),
+        ),
+        new_polygons=(
+            (((0, 0), (2, 0), (2, 2), (0, 1)), 5, 0),
+        ),
+    )
+
+    result, payload, markdown = _run_gpu_polygon_case(old_path, new_path, tmp_path / "one_dbu_area_diff.md")
+
+    assert result.status == CompareStatus.DIFFERENCES_FOUND
+    assert payload["exact_verification_complete"] is True
+    assert payload["exact_fallback"]["mode"] == "gpu-polygon-cuda-source-edge-records"
+    assert payload["unexpected_summary"]["unexpected_area_dbu2"] == "1"
+    assert payload["inventory_delta_count"] == 2
+    assert "coverage_xor_area_dbu2: `1`" in markdown
+    assert "`coverage_before_only` | 5 | 0" in markdown
+    assert "[0,1,2,2]" in markdown
+
+
+def test_gpu_polygon_reports_same_coverage_split_as_inventory_difference(tmp_path):
+    old_path, new_path = _write_polygon_case(
+        tmp_path,
+        "same_coverage_split",
+        old_polygons=(
+            (((0, 0), (10, 0), (10, 10), (0, 10)), 8, 0),
+        ),
+        new_polygons=(
+            (((0, 0), (5, 0), (5, 10), (0, 10)), 8, 0),
+            (((5, 0), (10, 0), (10, 10), (5, 10)), 8, 0),
+        ),
+    )
+
+    result, payload, markdown = _run_gpu_polygon_case(old_path, new_path, tmp_path / "same_coverage_split_diff.md")
+
+    assert result.status == CompareStatus.DIFFERENCES_FOUND
+    assert payload["evidence_status"] == "differences-found"
+    assert payload["coverage_changed"] is False
+    assert payload["inventory_changed"] is True
+    assert payload["coverage_equal_but_inventory_changed"] is True
+    assert payload["coverage_component_count"] == 0
+    assert payload["inventory_delta_count"] == 3
+    assert "No polygon-level differences were found." in markdown
+    assert "- coverage_equal_but_inventory_changed: `true`" in markdown
+    assert "`inventory_before_only` | 8 | 0" in markdown
+    assert "`inventory_after_only` | 8 | 0" in markdown
 
 
 def test_structural_guard_fast_path_attaches_exact_verification(tmp_path, monkeypatch):

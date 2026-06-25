@@ -8,7 +8,6 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Iterable
 
-import gdstk
 import numpy as np
 
 from .config import LayerSpec, parse_layer_selector
@@ -57,6 +56,8 @@ def extract_gds_polygons(
     meters_per_dbu: Decimal | str | float | None = None,
     path_policy: PathPolicy | str = PathPolicy.GDSTK,
 ) -> ExtractionResult:
+    import gdstk
+
     path = Path(path)
     path_policy = PathPolicy.coerce(path_policy)
     if path_policy == PathPolicy.REPORT_ONLY:

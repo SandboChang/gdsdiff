@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 
 from gds_tools_tk.gpu_compare.backends.cuda_ctypes import (
+    CudaCtypesUnavailable,
     cuda_ctypes_available,
+    run_cuda_axis_aligned_boundary_edges_from_fragments,
     run_cuda_boundary_loops_from_edges,
     run_cuda_context_overlap_pairs,
     run_cuda_mixed_boundary_edges,
@@ -14,6 +16,7 @@ from gds_tools_tk.gpu_compare.backends.cuda_ctypes import (
     run_cuda_polygon_component_areas,
     run_cuda_polygon_component_fragments,
     run_cuda_polygon_record_delta,
+    run_cuda_split_free_boundary_edges_from_fragments,
 )
 from gds_tools_tk.gpu_compare.backends.boundary_loop_ctypes import (
     boundary_loop_ctypes_available,
@@ -181,6 +184,62 @@ def test_cuda_context_overlap_pairs_match_bbox_layer_predicate():
 
     assert result.cuda_kernel_count >= 2
     assert list(zip(result.component_indices.tolist(), result.polygon_indices.tolist())) == [(0, 0), (1, 2), (2, 3)]
+
+
+def test_cuda_axis_aligned_boundary_edges_cancel_shared_edges():
+    if not cuda_ctypes_available():
+        pytest.skip("CUDA ctypes backend is not available")
+
+    fragments = (
+        _diff_fragment(((0, 0), (2, 0), (2, 2), (0, 2))),
+        _diff_fragment(((2, 0), (4, 0), (4, 2), (2, 2))),
+        _diff_fragment(((4, 0), (6, 0), (6, 2), (4, 2))),
+    )
+
+    result = run_cuda_axis_aligned_boundary_edges_from_fragments(fragments)
+
+    assert result.cuda_kernel_count >= 4
+    assert result.edges.tolist() == [
+        [0, 0, 2, 0],
+        [0, 2, 0, 0],
+        [2, 0, 4, 0],
+        [2, 2, 0, 2],
+        [4, 0, 6, 0],
+        [4, 2, 2, 2],
+        [6, 0, 6, 2],
+        [6, 2, 4, 2],
+    ]
+
+
+def test_cuda_split_free_boundary_edges_match_native_for_shared_sloped_edge():
+    if not cuda_ctypes_available():
+        pytest.skip("CUDA ctypes backend is not available")
+    if not boundary_loop_ctypes_available():
+        pytest.skip("native boundary loop backend is not available")
+
+    fragments = (
+        _diff_fragment(((0, 0), (4, 0), (2, 2))),
+        _diff_fragment(((4, 0), (4, 4), (2, 2))),
+    )
+
+    cuda = run_cuda_split_free_boundary_edges_from_fragments(fragments)
+    native = native_boundary_edges_from_fragments(fragments)
+
+    assert cuda.cuda_kernel_count >= 3
+    assert cuda.edges.tolist() == native.edges.tolist()
+
+
+def test_cuda_split_free_boundary_edges_reject_partial_collinear_overlap():
+    if not cuda_ctypes_available():
+        pytest.skip("CUDA ctypes backend is not available")
+
+    fragments = (
+        _diff_fragment(((0, 0), (4, 4), (0, 4))),
+        _diff_fragment(((2, 2), (6, 6), (2, 6))),
+    )
+
+    with pytest.raises(CudaCtypesUnavailable):
+        run_cuda_split_free_boundary_edges_from_fragments(fragments)
 
 
 def test_record_delta_components_group_by_layer_and_bbox_overlap(tmp_path):

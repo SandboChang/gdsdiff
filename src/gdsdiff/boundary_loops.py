@@ -19,6 +19,10 @@ class BoundaryLoopAssemblyStats:
     boundary_edge_count: int
     loop_count: int
     dropped_zero_area_loop_count: int
+    cuda_edge_cancel_s: float = 0.0
+    cuda_edge_cancel_kernel_count: int = 0
+    cuda_edge_cancel_event_elapsed_s: float = 0.0
+    cuda_edge_cancel_transferred_bytes: int = 0
     native_edge_cancel_s: float = 0.0
     cuda_loop_trace_s: float = 0.0
     native_loop_trace_s: float = 0.0
@@ -31,6 +35,10 @@ class BoundaryLoopAssemblyStats:
             "boundary_edge_count": self.boundary_edge_count,
             "loop_count": self.loop_count,
             "dropped_zero_area_loop_count": self.dropped_zero_area_loop_count,
+            "cuda_edge_cancel_s": self.cuda_edge_cancel_s,
+            "cuda_edge_cancel_kernel_count": self.cuda_edge_cancel_kernel_count,
+            "cuda_edge_cancel_event_elapsed_s": self.cuda_edge_cancel_event_elapsed_s,
+            "cuda_edge_cancel_transferred_bytes": self.cuda_edge_cancel_transferred_bytes,
             "native_edge_cancel_s": self.native_edge_cancel_s,
             "cuda_loop_trace_s": self.cuda_loop_trace_s,
             "native_loop_trace_s": self.native_loop_trace_s,
@@ -52,22 +60,35 @@ def assemble_boundary_loops(fragments: tuple[DiffFragment, ...]) -> BoundaryLoop
     fragments. It deliberately avoids polygon Boolean operations; the input is
     assumed to be already decomposed into non-overlapping coverage cells.
     """
+    cuda_edge_cancel_s = 0.0
+    cuda_edge_cancel_kernel_count = 0
+    cuda_edge_cancel_event_elapsed_s = 0.0
+    cuda_edge_cancel_transferred_bytes = 0
     native_edge_cancel_s = 0.0
     cuda_loop_trace_s = 0.0
     native_loop_trace_s = 0.0
     python_loop_trace_s = 0.0
-    native_edges_result = _try_native_boundary_edges_from_fragments(fragments)
-    native_edges = native_edges_result[0] if native_edges_result is not None else None
-    native_edge_cancel_s = native_edges_result[1] if native_edges_result is not None else 0.0
-    if native_edges is not None:
-        boundary_edge_count = int(len(native_edges))
+    edge_backend_result = _try_cuda_boundary_edges_from_fragments(fragments)
+    if edge_backend_result is None:
+        edge_backend_result = _try_native_boundary_edges_from_fragments(fragments)
+    edge_array = edge_backend_result[0] if edge_backend_result is not None else None
+    if edge_backend_result is not None:
+        if edge_backend_result[2] == "cuda":
+            cuda_edge_cancel_s = edge_backend_result[1]
+            cuda_edge_cancel_kernel_count = edge_backend_result[3]
+            cuda_edge_cancel_event_elapsed_s = edge_backend_result[4]
+            cuda_edge_cancel_transferred_bytes = edge_backend_result[5]
+        else:
+            native_edge_cancel_s = edge_backend_result[1]
+    if edge_array is not None:
+        boundary_edge_count = int(len(edge_array))
         cuda_start = perf_counter()
-        cuda_result = _try_cuda_boundary_loop_fragments_array(native_edges)
+        cuda_result = _try_cuda_boundary_loop_fragments_array(edge_array)
         cuda_loop_trace_s = perf_counter() - cuda_start
         native_loop_result = None
         if cuda_result is None:
             native_start = perf_counter()
-            native_loop_result = _try_native_boundary_loop_fragments_array(native_edges)
+            native_loop_result = _try_native_boundary_loop_fragments_array(edge_array)
             native_loop_trace_s = perf_counter() - native_start
         if cuda_result is not None:
             result = list(cuda_result.fragments)
@@ -76,7 +97,7 @@ def assemble_boundary_loops(fragments: tuple[DiffFragment, ...]) -> BoundaryLoop
             result = list(native_loop_result.fragments)
             dropped = native_loop_result.dropped_zero_area_loop_count
         else:
-            boundary_edges = _segments_from_edges_array(native_edges)
+            boundary_edges = _segments_from_edges_array(edge_array)
             python_start = perf_counter()
             result, dropped = _fragments_from_python_boundary_edges(boundary_edges)
             python_loop_trace_s = perf_counter() - python_start
@@ -103,6 +124,10 @@ def assemble_boundary_loops(fragments: tuple[DiffFragment, ...]) -> BoundaryLoop
             boundary_edge_count=boundary_edge_count,
             loop_count=len(result_tuple),
             dropped_zero_area_loop_count=dropped,
+            cuda_edge_cancel_s=cuda_edge_cancel_s,
+            cuda_edge_cancel_kernel_count=cuda_edge_cancel_kernel_count,
+            cuda_edge_cancel_event_elapsed_s=cuda_edge_cancel_event_elapsed_s,
+            cuda_edge_cancel_transferred_bytes=cuda_edge_cancel_transferred_bytes,
             native_edge_cancel_s=native_edge_cancel_s,
             cuda_loop_trace_s=cuda_loop_trace_s,
             native_loop_trace_s=native_loop_trace_s,
@@ -129,7 +154,33 @@ def _fragments_from_python_boundary_edges(boundary_edges: tuple[Segment, ...]) -
     return result, dropped
 
 
-def _try_native_boundary_edges_from_fragments(fragments: tuple[DiffFragment, ...]) -> tuple[Any, float] | None:
+def _try_cuda_boundary_edges_from_fragments(fragments: tuple[DiffFragment, ...]) -> tuple[Any, float, str, int, float, int] | None:
+    if len(fragments) < 2 or sum(len(fragment.points) for fragment in fragments) < 512:
+        return None
+    try:
+        from .backends.cuda_ctypes import (
+            run_cuda_axis_aligned_boundary_edges_from_fragments,
+            run_cuda_split_free_boundary_edges_from_fragments,
+        )
+
+        start = perf_counter()
+        if _all_edges_axis_aligned(fragments):
+            result = run_cuda_axis_aligned_boundary_edges_from_fragments(fragments)
+        else:
+            result = run_cuda_split_free_boundary_edges_from_fragments(fragments)
+        return (
+            result.edges,
+            perf_counter() - start,
+            "cuda",
+            result.cuda_kernel_count,
+            result.cuda_event_elapsed_s,
+            result.transferred_bytes,
+        )
+    except Exception:
+        return None
+
+
+def _try_native_boundary_edges_from_fragments(fragments: tuple[DiffFragment, ...]) -> tuple[Any, float, str, int, float, int] | None:
     if len(fragments) < 2 or sum(len(fragment.points) for fragment in fragments) < 64:
         return None
     try:
@@ -137,9 +188,20 @@ def _try_native_boundary_edges_from_fragments(fragments: tuple[DiffFragment, ...
 
         start = perf_counter()
         edges = native_boundary_edges_from_fragments(fragments).edges
-        return edges, perf_counter() - start
+        return edges, perf_counter() - start, "native", 0, 0.0, 0
     except Exception:
         return None
+
+
+def _all_edges_axis_aligned(fragments: tuple[DiffFragment, ...]) -> bool:
+    for fragment in fragments:
+        points = _clean_polygon(fragment.points)
+        if len(points) < 3:
+            continue
+        for start, stop in _edges(points):
+            if start[0] != stop[0] and start[1] != stop[1]:
+                return False
+    return True
 
 
 def _try_cuda_boundary_loop_fragments_array(edges: Any):

@@ -47,6 +47,11 @@ class FailurePolicy(_StringEnum):
 
 
 class CompareStatus(_StringEnum):
+    IDENTICAL = "identical"
+    DIFFERENCES_FOUND = "differences-found"
+    UNSUPPORTED_INPUT = "unsupported-input"
+    INCOMPLETE_EVIDENCE = "incomplete-evidence"
+    INTERNAL_MISMATCH = "internal-mismatch"
     EQUIVALENT = "equivalent"
     EXPECTED_DIFFERENCES_ONLY = "expected-differences-only"
     UNEXPECTED_DIFFERENCES = "unexpected-differences"
@@ -59,8 +64,10 @@ class CompareStatus(_StringEnum):
 def exit_code_for_status(status: CompareStatus | str, failure_policy: FailurePolicy | str = FailurePolicy.FAIL_ON_UNEXPECTED) -> int:
     status = CompareStatus.coerce(status)
     failure_policy = FailurePolicy.coerce(failure_policy)
-    if status == CompareStatus.EQUIVALENT:
+    if status in {CompareStatus.IDENTICAL, CompareStatus.EQUIVALENT}:
         return 0
+    if status == CompareStatus.DIFFERENCES_FOUND:
+        return 1
     if status == CompareStatus.EXPECTED_DIFFERENCES_ONLY:
         return 1 if failure_policy == FailurePolicy.FAIL_ON_ANY_DIFF else 0
     if status == CompareStatus.UNEXPECTED_DIFFERENCES:

@@ -73,6 +73,15 @@ class _CBoundaryLoopResult(ctypes.Structure):
     ]
 
 
+class _CBoundaryEdgesResult(ctypes.Structure):
+    _fields_ = [
+        ("edge_count", ctypes.c_uint64),
+        ("edges", ctypes.POINTER(ctypes.c_int64)),
+        ("cuda_kernel_count", ctypes.c_uint64),
+        ("cuda_event_elapsed_ms", ctypes.c_float),
+    ]
+
+
 class _CContextOverlapPairsResult(ctypes.Structure):
     _fields_ = [
         ("pair_count", ctypes.c_uint64),
@@ -127,6 +136,14 @@ class CudaPolygonRecordDelta:
 class CudaBoundaryLoopResult:
     fragments: tuple[DiffFragment, ...]
     dropped_zero_area_loop_count: int
+    cuda_kernel_count: int
+    cuda_event_elapsed_s: float
+    transferred_bytes: int
+
+
+@dataclass(frozen=True)
+class CudaBoundaryEdgesResult:
+    edges: np.ndarray
     cuda_kernel_count: int
     cuda_event_elapsed_s: float
     transferred_bytes: int
@@ -246,6 +263,57 @@ def run_cuda_polygon_record_delta(old_buffer: PolygonBuffer, new_buffer: Polygon
     if status != 0:
         message = library.gds_cuda_last_error()
         raise CudaCtypesUnavailable(message.decode("utf-8") if message else "CUDA polygon record delta failed")
+    try:
+        count = int(result.record_count)
+        return CudaPolygonRecordDelta(
+            layers=_copy_result_array(result.layers, count, np.int32),
+            datatypes=_copy_result_array(result.datatypes, count, np.int32),
+            directions=_copy_result_array(result.directions, count, np.uint8),
+            counts=_copy_result_array(result.counts, count, np.uint64),
+            bboxes=_copy_result_array(result.bboxes, count * 4, np.int64).reshape((count, 4)),
+            vertex_counts=_copy_result_array(result.vertex_counts, count, np.uint64),
+            flags=_copy_result_array(result.flags, count, np.uint32),
+            hashes=_copy_result_array(result.hashes, count * 2, np.uint64).reshape((count, 2)),
+            representative_indices=_copy_result_array(result.representative_indices, count, np.uint64),
+            old_input_count=int(result.old_input_count),
+            new_input_count=int(result.new_input_count),
+            matched_record_count=int(result.matched_record_count),
+            reduced_key_count=int(result.reduced_key_count),
+            cuda_kernel_count=int(result.cuda_kernel_count),
+            cuda_event_elapsed_s=float(result.cuda_event_elapsed_ms) / 1000.0,
+            transferred_bytes=_polygon_record_transfer_bytes(old_packed, new_packed),
+        )
+    finally:
+        library.gds_cuda_free_polygon_record_delta_result(ctypes.byref(result))
+
+
+def run_cuda_polygon_record_delta_from_hashes(old_buffer: PolygonBuffer, new_buffer: PolygonBuffer) -> CudaPolygonRecordDelta:
+    if old_buffer.polygon_hashes is None or new_buffer.polygon_hashes is None:
+        return run_cuda_polygon_record_delta(old_buffer, new_buffer)
+    library = _load_library()
+    old_packed = _pack_polygon_hash_record_buffer(old_buffer)
+    new_packed = _pack_polygon_hash_record_buffer(new_buffer)
+    result = _CPolygonRecordDeltaResult()
+    status = library.gds_cuda_polygon_record_delta_from_hashes(
+        _ptr_u64(old_packed["offsets"]),
+        _ptr_i32(old_packed["layers"]),
+        _ptr_i32(old_packed["datatypes"]),
+        _ptr_i64(old_packed["bboxes"]),
+        _ptr_u32(old_packed["flags"]),
+        _ptr_u64(old_packed["hashes"]),
+        ctypes.c_uint64(old_buffer.polygon_count),
+        _ptr_u64(new_packed["offsets"]),
+        _ptr_i32(new_packed["layers"]),
+        _ptr_i32(new_packed["datatypes"]),
+        _ptr_i64(new_packed["bboxes"]),
+        _ptr_u32(new_packed["flags"]),
+        _ptr_u64(new_packed["hashes"]),
+        ctypes.c_uint64(new_buffer.polygon_count),
+        ctypes.byref(result),
+    )
+    if status != 0:
+        message = library.gds_cuda_last_error()
+        raise CudaCtypesUnavailable(message.decode("utf-8") if message else "CUDA polygon hash record delta failed")
     try:
         count = int(result.record_count)
         return CudaPolygonRecordDelta(
@@ -631,6 +699,56 @@ def run_cuda_boundary_loops_from_edges(edges: np.ndarray) -> CudaBoundaryLoopRes
         library.gds_cuda_free_boundary_loop_result(ctypes.byref(result))
 
 
+def run_cuda_axis_aligned_boundary_edges_from_fragments(fragments: tuple[DiffFragment, ...]) -> CudaBoundaryEdgesResult:
+    library = _load_library()
+    vertices, offsets = _pack_diff_fragments(fragments)
+    result = _CBoundaryEdgesResult()
+    status = library.gds_cuda_axis_aligned_boundary_edges_from_polygons(
+        _ptr_i64(vertices.reshape((-1,))),
+        _ptr_u64(offsets),
+        ctypes.c_uint64(len(fragments)),
+        ctypes.byref(result),
+    )
+    if status != 0:
+        message = library.gds_cuda_last_error()
+        raise CudaCtypesUnavailable(message.decode("utf-8") if message else "CUDA axis boundary edge assembly failed")
+    try:
+        count = int(result.edge_count)
+        return CudaBoundaryEdgesResult(
+            edges=_copy_result_array(result.edges, count * 4, np.int64).reshape((count, 4)),
+            cuda_kernel_count=int(result.cuda_kernel_count),
+            cuda_event_elapsed_s=float(result.cuda_event_elapsed_ms) / 1000.0,
+            transferred_bytes=int(vertices.nbytes + offsets.nbytes),
+        )
+    finally:
+        library.gds_cuda_free_boundary_edges_result(ctypes.byref(result))
+
+
+def run_cuda_split_free_boundary_edges_from_fragments(fragments: tuple[DiffFragment, ...]) -> CudaBoundaryEdgesResult:
+    library = _load_library()
+    vertices, offsets = _pack_diff_fragments(fragments)
+    result = _CBoundaryEdgesResult()
+    status = library.gds_cuda_split_free_boundary_edges_from_polygons(
+        _ptr_i64(vertices.reshape((-1,))),
+        _ptr_u64(offsets),
+        ctypes.c_uint64(len(fragments)),
+        ctypes.byref(result),
+    )
+    if status != 0:
+        message = library.gds_cuda_last_error()
+        raise CudaCtypesUnavailable(message.decode("utf-8") if message else "CUDA split-free boundary edge assembly failed")
+    try:
+        count = int(result.edge_count)
+        return CudaBoundaryEdgesResult(
+            edges=_copy_result_array(result.edges, count * 4, np.int64).reshape((count, 4)),
+            cuda_kernel_count=int(result.cuda_kernel_count),
+            cuda_event_elapsed_s=float(result.cuda_event_elapsed_ms) / 1000.0,
+            transferred_bytes=int(vertices.nbytes + offsets.nbytes),
+        )
+    finally:
+        library.gds_cuda_free_boundary_edges_result(ctypes.byref(result))
+
+
 def run_cuda_context_overlap_pairs(
     component_bboxes: np.ndarray,
     component_layers: np.ndarray,
@@ -831,6 +949,23 @@ def _pack_polygon_record_buffer(buffer: PolygonBuffer) -> dict[str, np.ndarray]:
     }
 
 
+def _pack_polygon_hash_record_buffer(buffer: PolygonBuffer) -> dict[str, np.ndarray]:
+    if buffer.polygon_hashes is None:
+        raise CudaCtypesUnavailable("native polygon hashes are unavailable")
+    layer_values = np.asarray([layer.layer for layer in buffer.layer_table.layers], dtype=np.int32)
+    datatype_values = np.asarray([layer.datatype for layer in buffer.layer_table.layers], dtype=np.int32)
+    layers = np.ascontiguousarray(layer_values[buffer.layer_ids], dtype=np.int32)
+    datatypes = np.ascontiguousarray(datatype_values[buffer.layer_ids], dtype=np.int32)
+    return {
+        "offsets": np.ascontiguousarray(buffer.polygon_offsets, dtype=np.uint64),
+        "layers": layers,
+        "datatypes": datatypes,
+        "bboxes": np.ascontiguousarray(buffer.bboxes.reshape((-1,)), dtype=np.int64),
+        "flags": np.ascontiguousarray(buffer.flags, dtype=np.uint32),
+        "hashes": np.ascontiguousarray(buffer.polygon_hashes.reshape((-1,)), dtype=np.uint64),
+    }
+
+
 def _pack_polygon_components(components: tuple[PolygonComponent, ...]) -> dict[str, np.ndarray]:
     vertices: list[tuple[int, int]] = []
     polygon_offsets = [0]
@@ -850,6 +985,18 @@ def _pack_polygon_components(components: tuple[PolygonComponent, ...]) -> dict[s
         "polygon_sides": np.ascontiguousarray(np.asarray(polygon_sides, dtype=np.uint8), dtype=np.uint8),
         "component_offsets": np.ascontiguousarray(np.asarray(component_offsets, dtype=np.uint64), dtype=np.uint64),
     }
+
+
+def _pack_diff_fragments(fragments: tuple[DiffFragment, ...]) -> tuple[np.ndarray, np.ndarray]:
+    vertices: list[tuple[int, int]] = []
+    offsets = [0]
+    for fragment in fragments:
+        vertices.extend(fragment.points)
+        offsets.append(len(vertices))
+    return (
+        np.ascontiguousarray(np.asarray(vertices, dtype=np.int64).reshape((-1, 2)), dtype=np.int64),
+        np.ascontiguousarray(np.asarray(offsets, dtype=np.uint64), dtype=np.uint64),
+    )
 
 
 def _polygon_record_transfer_bytes(*packed_buffers: dict[str, np.ndarray]) -> int:
@@ -909,6 +1056,24 @@ def _load_library() -> ctypes.CDLL:
         ctypes.POINTER(_CPolygonRecordDeltaResult),
     ]
     library.gds_cuda_polygon_record_delta.restype = ctypes.c_int
+    library.gds_cuda_polygon_record_delta_from_hashes.argtypes = [
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.POINTER(ctypes.c_int64),
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.c_uint64,
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.POINTER(ctypes.c_int64),
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.c_uint64,
+        ctypes.POINTER(_CPolygonRecordDeltaResult),
+    ]
+    library.gds_cuda_polygon_record_delta_from_hashes.restype = ctypes.c_int
     library.gds_cuda_free_polygon_record_delta_result.argtypes = [ctypes.POINTER(_CPolygonRecordDeltaResult)]
     library.gds_cuda_free_polygon_record_delta_result.restype = None
     library.gds_cuda_boundary_loops_from_edges.argtypes = [
@@ -919,6 +1084,22 @@ def _load_library() -> ctypes.CDLL:
     library.gds_cuda_boundary_loops_from_edges.restype = ctypes.c_int
     library.gds_cuda_free_boundary_loop_result.argtypes = [ctypes.POINTER(_CBoundaryLoopResult)]
     library.gds_cuda_free_boundary_loop_result.restype = None
+    library.gds_cuda_axis_aligned_boundary_edges_from_polygons.argtypes = [
+        ctypes.POINTER(ctypes.c_int64),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.c_uint64,
+        ctypes.POINTER(_CBoundaryEdgesResult),
+    ]
+    library.gds_cuda_axis_aligned_boundary_edges_from_polygons.restype = ctypes.c_int
+    library.gds_cuda_split_free_boundary_edges_from_polygons.argtypes = [
+        ctypes.POINTER(ctypes.c_int64),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.c_uint64,
+        ctypes.POINTER(_CBoundaryEdgesResult),
+    ]
+    library.gds_cuda_split_free_boundary_edges_from_polygons.restype = ctypes.c_int
+    library.gds_cuda_free_boundary_edges_result.argtypes = [ctypes.POINTER(_CBoundaryEdgesResult)]
+    library.gds_cuda_free_boundary_edges_result.restype = None
     library.gds_cuda_context_overlap_pairs.argtypes = [
         ctypes.POINTER(ctypes.c_int64),
         ctypes.POINTER(ctypes.c_int32),

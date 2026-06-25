@@ -86,6 +86,10 @@ class LayerSideMergeStats:
     output_fragment_count: int = 0
     group_count: int = 0
     assembled_group_count: int = 0
+    cuda_edge_cancel_s: float = 0.0
+    cuda_edge_cancel_kernel_count: int = 0
+    cuda_edge_cancel_event_elapsed_s: float = 0.0
+    cuda_edge_cancel_transferred_bytes: int = 0
     native_edge_cancel_s: float = 0.0
     cuda_loop_trace_s: float = 0.0
     native_loop_trace_s: float = 0.0
@@ -98,6 +102,10 @@ class LayerSideMergeStats:
             "output_fragment_count": self.output_fragment_count,
             "group_count": self.group_count,
             "assembled_group_count": self.assembled_group_count,
+            "cuda_edge_cancel_s": self.cuda_edge_cancel_s,
+            "cuda_edge_cancel_kernel_count": self.cuda_edge_cancel_kernel_count,
+            "cuda_edge_cancel_event_elapsed_s": self.cuda_edge_cancel_event_elapsed_s,
+            "cuda_edge_cancel_transferred_bytes": self.cuda_edge_cancel_transferred_bytes,
             "native_edge_cancel_s": self.native_edge_cancel_s,
             "cuda_loop_trace_s": self.cuda_loop_trace_s,
             "native_loop_trace_s": self.native_loop_trace_s,
@@ -596,6 +604,10 @@ def _merge_layer_side_fragments_with_stats(fragments: tuple[DiffFragment, ...]) 
     merged: list[DiffFragment] = []
     group_count = 0
     assembled_group_count = 0
+    cuda_edge_cancel_s = 0.0
+    cuda_edge_cancel_kernel_count = 0
+    cuda_edge_cancel_event_elapsed_s = 0.0
+    cuda_edge_cancel_transferred_bytes = 0
     native_edge_cancel_s = 0.0
     cuda_loop_trace_s = 0.0
     native_loop_trace_s = 0.0
@@ -610,6 +622,10 @@ def _merge_layer_side_fragments_with_stats(fragments: tuple[DiffFragment, ...]) 
         assembly = assemble_boundary_loops(group)
         assembled = assembly.fragments
         assembled_group_count += 1
+        cuda_edge_cancel_s += assembly.stats.cuda_edge_cancel_s
+        cuda_edge_cancel_kernel_count += assembly.stats.cuda_edge_cancel_kernel_count
+        cuda_edge_cancel_event_elapsed_s += assembly.stats.cuda_edge_cancel_event_elapsed_s
+        cuda_edge_cancel_transferred_bytes += assembly.stats.cuda_edge_cancel_transferred_bytes
         native_edge_cancel_s += assembly.stats.native_edge_cancel_s
         cuda_loop_trace_s += assembly.stats.cuda_loop_trace_s
         native_loop_trace_s += assembly.stats.native_loop_trace_s
@@ -627,6 +643,10 @@ def _merge_layer_side_fragments_with_stats(fragments: tuple[DiffFragment, ...]) 
             output_fragment_count=len(output),
             group_count=group_count,
             assembled_group_count=assembled_group_count,
+            cuda_edge_cancel_s=cuda_edge_cancel_s,
+            cuda_edge_cancel_kernel_count=cuda_edge_cancel_kernel_count,
+            cuda_edge_cancel_event_elapsed_s=cuda_edge_cancel_event_elapsed_s,
+            cuda_edge_cancel_transferred_bytes=cuda_edge_cancel_transferred_bytes,
             native_edge_cancel_s=native_edge_cancel_s,
             cuda_loop_trace_s=cuda_loop_trace_s,
             native_loop_trace_s=native_loop_trace_s,

@@ -108,6 +108,15 @@ class CompareReport:
     warnings: tuple[str, ...] = field(default_factory=tuple)
     errors: tuple[str, ...] = field(default_factory=tuple)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    evidence_status: str | None = None
+    differences_found: bool | None = None
+    coverage_changed: bool | None = None
+    inventory_changed: bool | None = None
+    coverage_equal_but_inventory_changed: bool | None = None
+    coverage_component_count: int | None = None
+    inventory_delta_count: int | None = None
+    vertex_sidecar_path: str | None = None
+    unsupported_feature_count: int = 0
     command: tuple[str, ...] = field(default_factory=tuple)
     failure_policy: FailurePolicy | str = FailurePolicy.FAIL_ON_UNEXPECTED
     tool_version: str = TOOL_VERSION
@@ -115,12 +124,34 @@ class CompareReport:
     def to_json_dict(self) -> dict[str, Any]:
         status = CompareStatus.coerce(self.status)
         failure_policy = FailurePolicy.coerce(self.failure_policy)
+        coverage_changed = self.coverage_changed
+        if coverage_changed is None:
+            coverage_changed = any(
+                _area_string(layer.xor_area_dbu2) != "0"
+                for layer in self.layers
+            )
+        differences_found = self.differences_found
+        if differences_found is None:
+            differences_found = status in {
+                CompareStatus.DIFFERENCES_FOUND,
+                CompareStatus.EXPECTED_DIFFERENCES_ONLY,
+                CompareStatus.UNEXPECTED_DIFFERENCES,
+            }
         report = {
             "schema_version": REPORT_SCHEMA_VERSION,
             "tool_version": self.tool_version,
             "command": list(self.command),
             "status": status.value,
             "exit_code_category": exit_code_for_status(status, failure_policy),
+            "evidence_status": self.evidence_status or _default_evidence_status(status),
+            "differences_found": differences_found,
+            "coverage_changed": coverage_changed,
+            "inventory_changed": self.inventory_changed,
+            "coverage_equal_but_inventory_changed": self.coverage_equal_but_inventory_changed,
+            "coverage_component_count": self.coverage_component_count,
+            "inventory_delta_count": self.inventory_delta_count,
+            "vertex_sidecar_path": self.vertex_sidecar_path,
+            "unsupported_feature_count": self.unsupported_feature_count,
             "exact_verification_complete": self.exact_verification_complete,
             "old_input": self.old_input,
             "new_input": self.new_input,
@@ -222,6 +253,15 @@ def validate_report_dict(report: dict[str, Any]) -> None:
         "tool_version",
         "status",
         "exit_code_category",
+        "evidence_status",
+        "differences_found",
+        "coverage_changed",
+        "inventory_changed",
+        "coverage_equal_but_inventory_changed",
+        "coverage_component_count",
+        "inventory_delta_count",
+        "vertex_sidecar_path",
+        "unsupported_feature_count",
         "exact_verification_complete",
         "old_input",
         "new_input",
@@ -247,6 +287,17 @@ def validate_report_dict(report: dict[str, Any]) -> None:
     CompareStatus.coerce(report["status"])
     if report["exit_code_category"] not in {0, 1, 2}:
         raise ValueError("exit_code_category must be 0, 1, or 2")
+    if report["evidence_status"] not in {
+        "identical",
+        "differences-found",
+        "unsupported-input",
+        "incomplete-evidence",
+        "internal-mismatch",
+    }:
+        raise ValueError("invalid evidence_status")
+    for key in ("differences_found", "coverage_changed"):
+        if not isinstance(report[key], bool):
+            raise ValueError(f"{key} must be a boolean")
     if not isinstance(report["exact_verification_complete"], bool):
         raise ValueError("exact_verification_complete must be a boolean")
     if not isinstance(report["layers"], list):
@@ -282,3 +333,21 @@ def _validate_layer_report(layer: dict[str, Any]) -> None:
         "unexpected_area_dbu2",
     ):
         _area_string(layer[key])
+
+
+def _default_evidence_status(status: CompareStatus) -> str:
+    if status in {CompareStatus.IDENTICAL, CompareStatus.EQUIVALENT}:
+        return "identical"
+    if status in {
+        CompareStatus.DIFFERENCES_FOUND,
+        CompareStatus.EXPECTED_DIFFERENCES_ONLY,
+        CompareStatus.UNEXPECTED_DIFFERENCES,
+    }:
+        return "differences-found"
+    if status in {CompareStatus.INVALID_INPUT, CompareStatus.UNSUPPORTED_INPUT}:
+        return "unsupported-input"
+    if status in {CompareStatus.UNRESOLVED, CompareStatus.INCOMPLETE_EVIDENCE}:
+        return "incomplete-evidence"
+    if status == CompareStatus.INTERNAL_MISMATCH:
+        return "internal-mismatch"
+    return "incomplete-evidence"

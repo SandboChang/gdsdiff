@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-import gdstk
-
 
 def decimal_from_number(value: int | float | str | Decimal) -> Decimal:
     if isinstance(value, Decimal):
@@ -32,6 +30,8 @@ class GdsMetadata:
 
 
 def read_gds_metadata(path: str | Path) -> GdsMetadata:
+    import gdstk
+
     path = Path(path)
     lib = gdstk.read_gds(str(path))
     return GdsMetadata(

@@ -179,7 +179,10 @@ def test_cli_gpu_polygon_engine_uses_exact_cuda_rect_coverage_for_rectangle_inpu
 
     assert completed.returncode == 1
     data = json.loads(report_path.read_text(encoding="utf-8"))
-    assert data["status"] == "unexpected-differences"
+    assert data["status"] == "differences-found"
+    assert data["evidence_status"] == "differences-found"
+    assert data["differences_found"] is True
+    assert data["inventory_changed"] is True
     assert data["backend"]["evidence_engine_selected"] == "gpu-polygon"
     assert data["backend"]["gpu_polygon_available"] is True
     assert data["backend"]["gpu_coverage_engine"] == "cuda-rect-coverage"
@@ -188,11 +191,13 @@ def test_cli_gpu_polygon_engine_uses_exact_cuda_rect_coverage_for_rectangle_inpu
     assert data["exact_fallback"]["mode"] == "gpu-polygon-cuda-rect-coverage"
     assert data["exact_fallback"]["gpu_coverage"]["cuda_task_count"] > 0
     assert data["exact_verification_complete"] is True
+    assert data["artifacts"]["vertex_sidecar"]
     markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
     assert "- exact_verification_complete: `true`" in markdown
+    assert "- evidence_status: `differences-found`" in markdown
 
 
-def test_cli_gpu_polygon_engine_uses_component_fragments_for_non_rectangle_without_audit(tmp_path):
+def test_cli_gpu_polygon_engine_uses_source_edge_records_for_non_rectangle_without_audit(tmp_path):
     old_path = tmp_path / "old_tri.gds"
     new_path = tmp_path / "new_tri.gds"
     old_lib = gdstk.Library(unit=1e-6, precision=1e-9)
@@ -229,18 +234,22 @@ def test_cli_gpu_polygon_engine_uses_component_fragments_for_non_rectangle_witho
 
     assert completed.returncode == 1
     data = json.loads(report_path.read_text(encoding="utf-8"))
-    assert data["status"] == "unexpected-differences"
+    assert data["status"] == "differences-found"
+    assert data["evidence_status"] == "differences-found"
+    assert data["inventory_changed"] is True
     assert data["backend"]["gpu_polygon_available"] is True
     assert data["backend"]["gpu_record_delta_available"] is True
     assert data["backend"]["canonical_surplus_coverage_available"] is True
     assert data["backend"]["canonical_surplus_coverage_exact"] is False
-    assert data["exact_fallback"]["mode"] == "gpu-polygon-cuda-component-fragments"
-    assert data["exact_fallback"]["engine_status"] == "polygon-fragment-complete-host-records"
-    assert data["exact_fallback"]["gpu_polygon_component_area"]["gpu_trapezoid_fragments_available"] is True
+    assert data["exact_fallback"]["mode"] == "gpu-polygon-cuda-source-edge-records"
+    assert data["exact_fallback"]["engine_status"] == "source-edge-boundary-records-complete"
+    assert data["exact_fallback"]["gpu_polygon_component_area"]["gpu_trapezoid_fragments_available"] is False
+    assert data["exact_fallback"]["gpu_polygon_component_area"]["gpu_source_edge_records_available"] is True
     assert data["exact_verification_complete"] is True
+    assert data["artifacts"]["vertex_sidecar"]
     markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
-    assert "GPU Component Fragment Evidence" in markdown
-    assert "- exact_boundary_loops_available: `false`" in markdown
+    assert "GPU Polygon Evidence" in markdown
+    assert "- exact_boundary_loops_available: `true`" in markdown
 
 
 def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
@@ -272,7 +281,8 @@ def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
 
     assert completed.returncode == 1
     data = json.loads(report_path.read_text(encoding="utf-8"))
-    assert data["status"] == "unexpected-differences"
+    assert data["status"] == "differences-found"
+    assert data["evidence_status"] == "differences-found"
     assert data["backend"]["evidence_engine_selected"] == "gpu-polygon"
     assert data["backend"]["gpu_polygon_available"] is True
     assert data["backend"]["audit_cpu_oracle"] is True
@@ -281,6 +291,7 @@ def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
     assert data["exact_fallback"]["audit_cpu_oracle"] is True
     assert data["exact_fallback"]["cpu_oracle_audit"]["match"] is True
     assert data["exact_verification_complete"] is True
+    assert data["artifacts"]["vertex_sidecar"]
     assert data["timings"]["cpu_oracle_audit_s"] >= 0
     markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
     assert "- exact_verification_complete: `true`" in markdown
@@ -338,4 +349,4 @@ def test_cli_verify_exact_after_fast_attaches_exact_evidence_when_cuda_available
     assert "- exact_verification_complete: `true`" in markdown
     assert "vertices_preview_dbu" in markdown
     assert "points_sha256" in markdown
-    assert "| `unexpected` | `removal` | 1 | 0 |" in markdown or "| `unexpected` | `addition` | 1 | 0 |" in markdown
+    assert "| `coverage_before_only` | 1 | 0 |" in markdown or "| `coverage_after_only` | 1 | 0 |" in markdown

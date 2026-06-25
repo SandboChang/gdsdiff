@@ -40,6 +40,10 @@ class SourceEdgeDiffStats:
     layer_merge_output_fragment_count: int = 0
     layer_merge_group_count: int = 0
     layer_merge_assembled_group_count: int = 0
+    layer_merge_cuda_edge_cancel_s: float = 0.0
+    layer_merge_cuda_edge_cancel_kernel_count: int = 0
+    layer_merge_cuda_edge_cancel_event_elapsed_s: float = 0.0
+    layer_merge_cuda_edge_cancel_transferred_bytes: int = 0
     layer_merge_native_edge_cancel_s: float = 0.0
     layer_merge_cuda_loop_trace_s: float = 0.0
     layer_merge_native_loop_trace_s: float = 0.0
@@ -65,6 +69,10 @@ class SourceEdgeDiffStats:
             "layer_merge_output_fragment_count": self.layer_merge_output_fragment_count,
             "layer_merge_group_count": self.layer_merge_group_count,
             "layer_merge_assembled_group_count": self.layer_merge_assembled_group_count,
+            "layer_merge_cuda_edge_cancel_s": self.layer_merge_cuda_edge_cancel_s,
+            "layer_merge_cuda_edge_cancel_kernel_count": self.layer_merge_cuda_edge_cancel_kernel_count,
+            "layer_merge_cuda_edge_cancel_event_elapsed_s": self.layer_merge_cuda_edge_cancel_event_elapsed_s,
+            "layer_merge_cuda_edge_cancel_transferred_bytes": self.layer_merge_cuda_edge_cancel_transferred_bytes,
             "layer_merge_native_edge_cancel_s": self.layer_merge_native_edge_cancel_s,
             "layer_merge_cuda_loop_trace_s": self.layer_merge_cuda_loop_trace_s,
             "layer_merge_native_loop_trace_s": self.layer_merge_native_loop_trace_s,
@@ -159,6 +167,10 @@ def exact_result_from_source_edges(components: tuple[PolygonComponent, ...]) -> 
             layer_merge_output_fragment_count=layer_merge_stats.output_fragment_count,
             layer_merge_group_count=layer_merge_stats.group_count,
             layer_merge_assembled_group_count=layer_merge_stats.assembled_group_count,
+            layer_merge_cuda_edge_cancel_s=layer_merge_stats.cuda_edge_cancel_s,
+            layer_merge_cuda_edge_cancel_kernel_count=layer_merge_stats.cuda_edge_cancel_kernel_count,
+            layer_merge_cuda_edge_cancel_event_elapsed_s=layer_merge_stats.cuda_edge_cancel_event_elapsed_s,
+            layer_merge_cuda_edge_cancel_transferred_bytes=layer_merge_stats.cuda_edge_cancel_transferred_bytes,
             layer_merge_native_edge_cancel_s=layer_merge_stats.native_edge_cancel_s,
             layer_merge_cuda_loop_trace_s=layer_merge_stats.cuda_loop_trace_s,
             layer_merge_native_loop_trace_s=layer_merge_stats.native_loop_trace_s,
@@ -174,6 +186,10 @@ def _add_layer_merge_stats(left: LayerSideMergeStats, right: LayerSideMergeStats
         output_fragment_count=left.output_fragment_count + right.output_fragment_count,
         group_count=left.group_count + right.group_count,
         assembled_group_count=left.assembled_group_count + right.assembled_group_count,
+        cuda_edge_cancel_s=left.cuda_edge_cancel_s + right.cuda_edge_cancel_s,
+        cuda_edge_cancel_kernel_count=left.cuda_edge_cancel_kernel_count + right.cuda_edge_cancel_kernel_count,
+        cuda_edge_cancel_event_elapsed_s=left.cuda_edge_cancel_event_elapsed_s + right.cuda_edge_cancel_event_elapsed_s,
+        cuda_edge_cancel_transferred_bytes=left.cuda_edge_cancel_transferred_bytes + right.cuda_edge_cancel_transferred_bytes,
         native_edge_cancel_s=left.native_edge_cancel_s + right.native_edge_cancel_s,
         cuda_loop_trace_s=left.cuda_loop_trace_s + right.cuda_loop_trace_s,
         native_loop_trace_s=left.native_loop_trace_s + right.native_loop_trace_s,

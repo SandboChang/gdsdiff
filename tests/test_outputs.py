@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 
 import gdstk
@@ -237,7 +238,15 @@ def test_exact_diff_markdown_includes_polygon_vertices(tmp_path):
 
     assert written.path == target
     assert written.component_count == 2
-    assert target.read_text(encoding="utf-8") == markdown
+    assert written.vertex_sidecar_path is not None
+    assert written.vertex_sidecar_path.exists()
+    written_markdown = target.read_text(encoding="utf-8")
+    assert "# Exact evidence" in written_markdown
+    assert "- vertex_sidecar_path: `" in written_markdown
+    sidecar_records = [json.loads(line) for line in written.vertex_sidecar_path.read_text(encoding="utf-8").splitlines()]
+    assert {record["kind"] for record in sidecar_records} == {"coverage_component", "source_polygon_inventory"}
+    assert len(sidecar_records) == 4
+    assert all(record["vertices_dbu"] for record in sidecar_records)
 
 
 def test_exact_diff_markdown_reports_polygon_split_with_zero_coverage_change():
@@ -266,9 +275,9 @@ def test_exact_diff_markdown_reports_polygon_split_with_zero_coverage_change():
     assert "- removed_polygon_records: `1`" in markdown
     assert "- added_polygon_records: `2`" in markdown
     assert "- exact_coverage_xor_area_dbu2: `0`" in markdown
-    assert "polygon inventory changed but exact coverage XOR is zero" in markdown
-    assert '"direction": "removal"' in markdown
-    assert '"direction": "addition"' in markdown
+    assert "- coverage_equal_but_inventory_changed: `true`" in markdown
+    assert '"direction": "inventory_before_only"' in markdown
+    assert '"direction": "inventory_after_only"' in markdown
     assert '"vertices_dbu": [' in markdown
 
 
@@ -305,7 +314,7 @@ def test_exact_diff_markdown_warns_when_verification_is_incomplete():
         generated_at=datetime(2026, 6, 25, tzinfo=timezone.utc),
     )
 
-    assert "## Exactness Warning" in markdown
+    assert "## Evidence Completeness Warning" in markdown
     assert "- omitted_component_count: `1`" in markdown
     assert "- omitted_vertex_count: `2`" in markdown
 

@@ -4,11 +4,14 @@
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
 #include <thrust/host_vector.h>
+#include <thrust/iterator/constant_iterator.h>
+#include <thrust/remove.h>
 #include <thrust/reduce.h>
 #include <thrust/scan.h>
 #include <thrust/sort.h>
 #include <thrust/transform.h>
 #include <thrust/tuple.h>
+#include <thrust/unique.h>
 
 #include <algorithm>
 #include <cmath>
@@ -147,6 +150,60 @@ struct SideAssignments {
     thrust::device_vector<DeviceAssignment> assignments;
     std::vector<OversizedItem> oversized_items;
     std::uint64_t assignment_count = 0;
+};
+
+struct AxisRawEdge {
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+    std::int64_t line = 0;
+    std::int64_t p0 = 0;
+    std::int64_t p1 = 0;
+    std::uint8_t vertical = 0;
+    std::uint8_t valid = 0;
+};
+
+struct AxisEndpointKey {
+    std::uint8_t vertical = 0;
+    std::int64_t line = 0;
+    std::int64_t projection = 0;
+
+    __host__ __device__ bool operator<(const AxisEndpointKey& other) const {
+        return thrust::make_tuple(vertical, line, projection)
+            < thrust::make_tuple(other.vertical, other.line, other.projection);
+    }
+
+    __host__ __device__ bool operator==(const AxisEndpointKey& other) const {
+        return vertical == other.vertical && line == other.line && projection == other.projection;
+    }
+};
+
+struct AxisEndpointInvalid {
+    __host__ __device__ bool operator()(const AxisEndpointKey& key) const {
+        return key.vertical > 1;
+    }
+};
+
+struct EdgeKey {
+    std::int64_t x0 = 0;
+    std::int64_t y0 = 0;
+    std::int64_t x1 = 0;
+    std::int64_t y1 = 0;
+
+    __host__ __device__ bool operator<(const EdgeKey& other) const {
+        return thrust::make_tuple(x0, y0, x1, y1) < thrust::make_tuple(other.x0, other.y0, other.x1, other.y1);
+    }
+
+    __host__ __device__ bool operator==(const EdgeKey& other) const {
+        return x0 == other.x0 && y0 == other.y0 && x1 == other.x1 && y1 == other.y1;
+    }
+};
+
+struct EdgeInvalid {
+    __host__ __device__ bool operator()(const EdgeKey& edge) const {
+        return edge.x0 == edge.x1 && edge.y0 == edge.y1;
+    }
 };
 
 template <class T>
@@ -524,6 +581,41 @@ __global__ void polygon_record_key_kernel(
             bboxes[index * 4 + 3],
             hash0,
             hash1,
+        },
+        side,
+        index,
+    };
+}
+
+__global__ void polygon_record_key_from_hash_kernel(
+    const std::uint64_t* polygon_offsets,
+    const std::int32_t* layers,
+    const std::int32_t* datatypes,
+    const std::int64_t* bboxes,
+    const std::uint32_t* flags,
+    const std::uint64_t* hashes,
+    std::uint64_t count,
+    std::uint8_t side,
+    std::uint64_t out_offset,
+    PolygonSideRecord* out_records) {
+    const std::uint64_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) {
+        return;
+    }
+    const std::uint64_t start = polygon_offsets[index];
+    const std::uint64_t stop = polygon_offsets[index + 1];
+    out_records[out_offset + index] = PolygonSideRecord{
+        PolygonRecordKey{
+            layers[index],
+            datatypes[index],
+            flags[index],
+            stop - start,
+            bboxes[index * 4 + 0],
+            bboxes[index * 4 + 1],
+            bboxes[index * 4 + 2],
+            bboxes[index * 4 + 3],
+            hashes[index * 2 + 0],
+            hashes[index * 2 + 1],
         },
         side,
         index,
@@ -1950,6 +2042,307 @@ __global__ void boundary_loop_trace_kernel(
     }
 }
 
+__global__ void axis_raw_edge_kernel(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* fragment_offsets,
+    std::uint64_t fragment_count,
+    AxisRawEdge* raw_edges,
+    AxisEndpointKey* endpoints,
+    std::uint32_t* error) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t fragment_index = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         fragment_index < fragment_count;
+         fragment_index += stride) {
+        const std::uint64_t start = fragment_offsets[fragment_index];
+        const std::uint64_t stop = fragment_offsets[fragment_index + 1];
+        if (stop <= start + 2) {
+            continue;
+        }
+        for (std::uint64_t vertex_index = start; vertex_index < stop; ++vertex_index) {
+            const std::uint64_t next_index = vertex_index + 1 == stop ? start : vertex_index + 1;
+            const auto x0 = vertices_xy[vertex_index * 2];
+            const auto y0 = vertices_xy[vertex_index * 2 + 1];
+            const auto x1 = vertices_xy[next_index * 2];
+            const auto y1 = vertices_xy[next_index * 2 + 1];
+            AxisRawEdge edge{};
+            AxisEndpointKey first_endpoint{2, 0, 0};
+            AxisEndpointKey second_endpoint{2, 0, 0};
+            if (x0 == x1 && y0 == y1) {
+                raw_edges[vertex_index] = edge;
+                endpoints[vertex_index * 2] = first_endpoint;
+                endpoints[vertex_index * 2 + 1] = second_endpoint;
+                continue;
+            }
+            if (x0 == x1) {
+                edge = AxisRawEdge{x0, y0, x1, y1, x0, y0, y1, 1, 1};
+                first_endpoint = AxisEndpointKey{1, x0, y0};
+                second_endpoint = AxisEndpointKey{1, x0, y1};
+            } else if (y0 == y1) {
+                edge = AxisRawEdge{x0, y0, x1, y1, y0, x0, x1, 0, 1};
+                first_endpoint = AxisEndpointKey{0, y0, x0};
+                second_endpoint = AxisEndpointKey{0, y0, x1};
+            } else {
+                atomicOr(error, 1u);
+            }
+            raw_edges[vertex_index] = edge;
+            endpoints[vertex_index * 2] = first_endpoint;
+            endpoints[vertex_index * 2 + 1] = second_endpoint;
+        }
+    }
+}
+
+__device__ bool axis_endpoint_in_edge(const AxisEndpointKey& endpoint, const AxisRawEdge& edge, std::int64_t low, std::int64_t high) {
+    return endpoint.vertical == edge.vertical
+        && endpoint.line == edge.line
+        && low <= endpoint.projection
+        && endpoint.projection <= high;
+}
+
+__global__ void axis_split_count_kernel(
+    const AxisRawEdge* raw_edges,
+    std::uint64_t raw_edge_count,
+    const AxisEndpointKey* endpoints,
+    std::uint64_t endpoint_count,
+    std::uint64_t* split_counts) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t edge_index = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         edge_index < raw_edge_count;
+         edge_index += stride) {
+        const auto edge = raw_edges[edge_index];
+        if (!edge.valid) {
+            split_counts[edge_index] = 0;
+            continue;
+        }
+        const auto low = min(edge.p0, edge.p1);
+        const auto high = max(edge.p0, edge.p1);
+        std::uint64_t breakpoint_count = 0;
+        for (std::uint64_t endpoint_index = 0; endpoint_index < endpoint_count; ++endpoint_index) {
+            if (axis_endpoint_in_edge(endpoints[endpoint_index], edge, low, high)) {
+                ++breakpoint_count;
+            }
+        }
+        split_counts[edge_index] = breakpoint_count > 1 ? breakpoint_count - 1 : 0;
+    }
+}
+
+__device__ EdgeKey axis_edge_from_line_piece(std::uint8_t vertical, std::int64_t line, std::int64_t a, std::int64_t b, bool reverse) {
+    if (vertical) {
+        return reverse ? EdgeKey{line, b, line, a} : EdgeKey{line, a, line, b};
+    }
+    return reverse ? EdgeKey{b, line, a, line} : EdgeKey{a, line, b, line};
+}
+
+__global__ void axis_split_emit_kernel(
+    const AxisRawEdge* raw_edges,
+    std::uint64_t raw_edge_count,
+    const AxisEndpointKey* endpoints,
+    std::uint64_t endpoint_count,
+    const std::uint64_t* split_offsets,
+    EdgeKey* split_edges) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t edge_index = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         edge_index < raw_edge_count;
+         edge_index += stride) {
+        const auto edge = raw_edges[edge_index];
+        if (!edge.valid) {
+            continue;
+        }
+        const auto low = min(edge.p0, edge.p1);
+        const auto high = max(edge.p0, edge.p1);
+        const bool reverse = edge.p0 > edge.p1;
+        bool have_previous = false;
+        std::int64_t previous = 0;
+        std::uint64_t out_index = split_offsets[edge_index];
+        for (std::uint64_t endpoint_index = 0; endpoint_index < endpoint_count; ++endpoint_index) {
+            const auto endpoint = endpoints[endpoint_index];
+            if (!axis_endpoint_in_edge(endpoint, edge, low, high)) {
+                continue;
+            }
+            if (!have_previous) {
+                previous = endpoint.projection;
+                have_previous = true;
+                continue;
+            }
+            if (previous != endpoint.projection) {
+                split_edges[out_index++] = axis_edge_from_line_piece(edge.vertical, edge.line, previous, endpoint.projection, reverse);
+            }
+            previous = endpoint.projection;
+        }
+    }
+}
+
+__device__ EdgeKey edge_reverse_key(const EdgeKey& edge) {
+    return EdgeKey{edge.x1, edge.y1, edge.x0, edge.y0};
+}
+
+__device__ bool edge_less_device(const EdgeKey& left, const EdgeKey& right) {
+    if (left.x0 != right.x0) return left.x0 < right.x0;
+    if (left.y0 != right.y0) return left.y0 < right.y0;
+    if (left.x1 != right.x1) return left.x1 < right.x1;
+    return left.y1 < right.y1;
+}
+
+__device__ bool edge_equal_device(const EdgeKey& left, const EdgeKey& right) {
+    return left.x0 == right.x0 && left.y0 == right.y0 && left.x1 == right.x1 && left.y1 == right.y1;
+}
+
+__device__ std::uint64_t edge_lower_bound_device(const EdgeKey* edges, std::uint64_t count, const EdgeKey& key) {
+    std::uint64_t left = 0;
+    std::uint64_t right = count;
+    while (left < right) {
+        const std::uint64_t middle = left + (right - left) / 2;
+        if (edge_less_device(edges[middle], key)) {
+            left = middle + 1;
+        } else {
+            right = middle;
+        }
+    }
+    return left;
+}
+
+__global__ void edge_surplus_count_kernel(
+    const EdgeKey* unique_edges,
+    const std::uint64_t* counts,
+    std::uint64_t unique_count,
+    std::uint64_t* surplus_counts) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t index = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         index < unique_count;
+         index += stride) {
+        const auto reverse = edge_reverse_key(unique_edges[index]);
+        const auto reverse_index = edge_lower_bound_device(unique_edges, unique_count, reverse);
+        std::uint64_t reverse_count = 0;
+        if (reverse_index < unique_count && edge_equal_device(unique_edges[reverse_index], reverse)) {
+            reverse_count = counts[reverse_index];
+        }
+        surplus_counts[index] = counts[index] > reverse_count ? counts[index] - reverse_count : 0;
+    }
+}
+
+__global__ void edge_surplus_emit_kernel(
+    const EdgeKey* unique_edges,
+    const std::uint64_t* surplus_counts,
+    const std::uint64_t* surplus_offsets,
+    std::uint64_t unique_count,
+    std::int64_t* out_edges) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t index = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         index < unique_count;
+         index += stride) {
+        const auto edge = unique_edges[index];
+        const auto count = surplus_counts[index];
+        const auto start = surplus_offsets[index];
+        for (std::uint64_t repeat = 0; repeat < count; ++repeat) {
+            const std::uint64_t out_index = start + repeat;
+            out_edges[out_index * 4] = edge.x0;
+            out_edges[out_index * 4 + 1] = edge.y0;
+            out_edges[out_index * 4 + 2] = edge.x1;
+            out_edges[out_index * 4 + 3] = edge.y1;
+        }
+    }
+}
+
+__global__ void split_free_raw_edge_kernel(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* fragment_offsets,
+    std::uint64_t fragment_count,
+    EdgeKey* raw_edges) {
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t fragment_index = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         fragment_index < fragment_count;
+         fragment_index += stride) {
+        const std::uint64_t start = fragment_offsets[fragment_index];
+        const std::uint64_t stop = fragment_offsets[fragment_index + 1];
+        if (stop <= start + 2) {
+            continue;
+        }
+        for (std::uint64_t vertex_index = start; vertex_index < stop; ++vertex_index) {
+            const std::uint64_t next_index = vertex_index + 1 == stop ? start : vertex_index + 1;
+            raw_edges[vertex_index] = EdgeKey{
+                vertices_xy[vertex_index * 2],
+                vertices_xy[vertex_index * 2 + 1],
+                vertices_xy[next_index * 2],
+                vertices_xy[next_index * 2 + 1],
+            };
+        }
+    }
+}
+
+__device__ long long edge_cross_64(long long ax, long long ay, long long bx, long long by) {
+    return ax * by - ay * bx;
+}
+
+__device__ bool edge_same_undirected(const EdgeKey& left, const EdgeKey& right) {
+    return (left.x0 == right.x0 && left.y0 == right.y0 && left.x1 == right.x1 && left.y1 == right.y1)
+        || (left.x0 == right.x1 && left.y0 == right.y1 && left.x1 == right.x0 && left.y1 == right.y0);
+}
+
+__device__ bool edge_collinear(const EdgeKey& left, const EdgeKey& right) {
+    const long long ldx = static_cast<long long>(left.x1 - left.x0);
+    const long long ldy = static_cast<long long>(left.y1 - left.y0);
+    const long long rdx = static_cast<long long>(right.x1 - right.x0);
+    const long long rdy = static_cast<long long>(right.y1 - right.y0);
+    if (edge_cross_64(ldx, ldy, rdx, rdy) != 0) {
+        return false;
+    }
+    const long long cx = static_cast<long long>(right.x0 - left.x0);
+    const long long cy = static_cast<long long>(right.y0 - left.y0);
+    return edge_cross_64(cx, cy, ldx, ldy) == 0;
+}
+
+__device__ bool edge_positive_projection_overlap(const EdgeKey& left, const EdgeKey& right) {
+    const auto ldx = left.x1 >= left.x0 ? left.x1 - left.x0 : left.x0 - left.x1;
+    const auto ldy = left.y1 >= left.y0 ? left.y1 - left.y0 : left.y0 - left.y1;
+    std::int64_t left_a = 0;
+    std::int64_t left_b = 0;
+    std::int64_t right_a = 0;
+    std::int64_t right_b = 0;
+    if (ldx >= ldy) {
+        left_a = min(left.x0, left.x1);
+        left_b = max(left.x0, left.x1);
+        right_a = min(right.x0, right.x1);
+        right_b = max(right.x0, right.x1);
+    } else {
+        left_a = min(left.y0, left.y1);
+        left_b = max(left.y0, left.y1);
+        right_a = min(right.y0, right.y1);
+        right_b = max(right.y0, right.y1);
+    }
+    return max(left_a, right_a) < min(left_b, right_b);
+}
+
+__global__ void split_free_required_kernel(
+    const EdgeKey* raw_edges,
+    std::uint64_t edge_count,
+    std::uint32_t* split_required) {
+    const std::uint64_t total_pairs = edge_count * edge_count;
+    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
+    for (std::uint64_t linear = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         linear < total_pairs;
+         linear += stride) {
+        if (*split_required) {
+            return;
+        }
+        const std::uint64_t left_index = linear / edge_count;
+        const std::uint64_t right_index = linear - left_index * edge_count;
+        if (right_index <= left_index) {
+            continue;
+        }
+        const auto left = raw_edges[left_index];
+        const auto right = raw_edges[right_index];
+        if (EdgeInvalid{}(left) || EdgeInvalid{}(right)) {
+            continue;
+        }
+        if (!edge_collinear(left, right) || !edge_positive_projection_overlap(left, right)) {
+            continue;
+        }
+        if (!edge_same_undirected(left, right)) {
+            atomicOr(split_required, 1u);
+            return;
+        }
+    }
+}
+
 __global__ void context_overlap_flag_kernel(
     const std::int64_t* component_bboxes,
     const std::int32_t* component_layers,
@@ -2191,6 +2584,13 @@ struct GdsCudaBoundaryLoopResult {
     float cuda_event_elapsed_ms;
 };
 
+struct GdsCudaBoundaryEdgesResult {
+    std::uint64_t edge_count;
+    std::int64_t* edges;
+    std::uint64_t cuda_kernel_count;
+    float cuda_event_elapsed_ms;
+};
+
 struct GdsCudaContextOverlapPairsResult {
     std::uint64_t pair_count;
     std::uint64_t* component_indices;
@@ -2209,11 +2609,20 @@ int gds_cuda_release_device_memory() {
         g_last_error = std::string("cudaDeviceSynchronize before release: ") + cudaGetErrorString(sync_status);
         return 1;
     }
-    const auto reset_status = cudaDeviceReset();
-    if (reset_status != cudaSuccess && reset_status != cudaErrorCudartUnloading) {
-        g_last_error = std::string("cudaDeviceReset: ") + cudaGetErrorString(reset_status);
+#if CUDART_VERSION >= 11020
+    cudaMemPool_t pool = nullptr;
+    const auto pool_status = cudaDeviceGetDefaultMemPool(&pool, 0);
+    if (pool_status == cudaSuccess && pool) {
+        const auto trim_status = cudaMemPoolTrimTo(pool, 0);
+        if (trim_status != cudaSuccess && trim_status != cudaErrorCudartUnloading) {
+            g_last_error = std::string("cudaMemPoolTrimTo: ") + cudaGetErrorString(trim_status);
+            return 1;
+        }
+    } else if (pool_status != cudaErrorNotSupported && pool_status != cudaErrorCudartUnloading) {
+        g_last_error = std::string("cudaDeviceGetDefaultMemPool: ") + cudaGetErrorString(pool_status);
         return 1;
     }
+#endif
     g_last_error.clear();
     return 0;
 }
@@ -2255,6 +2664,14 @@ void gds_cuda_free_boundary_loop_result(GdsCudaBoundaryLoopResult* result) {
     std::free(result->bboxes);
     std::free(result->twice_areas);
     *result = GdsCudaBoundaryLoopResult{};
+}
+
+void gds_cuda_free_boundary_edges_result(GdsCudaBoundaryEdgesResult* result) {
+    if (!result) {
+        return;
+    }
+    std::free(result->edges);
+    *result = GdsCudaBoundaryEdgesResult{};
 }
 
 void gds_cuda_free_context_overlap_pairs_result(GdsCudaContextOverlapPairsResult* result) {
@@ -2525,6 +2942,221 @@ int gds_cuda_polygon_record_delta(
             cudaEventDestroy(event_stop);
         }
         g_last_error = "unknown CUDA polygon record delta error";
+        if (result) {
+            gds_cuda_free_polygon_record_delta_result(result);
+        }
+        return 1;
+    }
+}
+
+int gds_cuda_polygon_record_delta_from_hashes(
+    const std::uint64_t* old_offsets,
+    const std::int32_t* old_layers,
+    const std::int32_t* old_datatypes,
+    const std::int64_t* old_bboxes,
+    const std::uint32_t* old_flags,
+    const std::uint64_t* old_hashes,
+    std::uint64_t old_count,
+    const std::uint64_t* new_offsets,
+    const std::int32_t* new_layers,
+    const std::int32_t* new_datatypes,
+    const std::int64_t* new_bboxes,
+    const std::uint32_t* new_flags,
+    const std::uint64_t* new_hashes,
+    std::uint64_t new_count,
+    GdsCudaPolygonRecordDeltaResult* result) {
+    cudaEvent_t event_start = nullptr;
+    cudaEvent_t event_stop = nullptr;
+    try {
+        if (!result) {
+            throw std::invalid_argument("polygon record delta result pointer is null");
+        }
+        *result = GdsCudaPolygonRecordDeltaResult{};
+        result->old_input_count = old_count;
+        result->new_input_count = new_count;
+        const std::uint64_t total_count = old_count + new_count;
+        if (total_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (total_count < old_count) {
+            throw std::overflow_error("polygon record count overflow");
+        }
+        if (old_count && (!old_offsets || !old_layers || !old_datatypes || !old_bboxes || !old_flags || !old_hashes)) {
+            throw std::invalid_argument("old polygon hash delta input contains null pointer");
+        }
+        if (new_count && (!new_offsets || !new_layers || !new_datatypes || !new_bboxes || !new_flags || !new_hashes)) {
+            throw std::invalid_argument("new polygon hash delta input contains null pointer");
+        }
+
+        check_cuda(cudaEventCreate(&event_start), "create polygon hash delta start event");
+        check_cuda(cudaEventCreate(&event_stop), "create polygon hash delta stop event");
+        check_cuda(cudaEventRecord(event_start), "record polygon hash delta start event");
+
+        DeviceBuffer<std::uint64_t> d_old_offsets(old_count ? old_count + 1 : 0);
+        DeviceBuffer<std::int32_t> d_old_layers(old_count);
+        DeviceBuffer<std::int32_t> d_old_datatypes(old_count);
+        DeviceBuffer<std::int64_t> d_old_bboxes(old_count * 4);
+        DeviceBuffer<std::uint32_t> d_old_flags(old_count);
+        DeviceBuffer<std::uint64_t> d_old_hashes(old_count * 2);
+        DeviceBuffer<std::uint64_t> d_new_offsets(new_count ? new_count + 1 : 0);
+        DeviceBuffer<std::int32_t> d_new_layers(new_count);
+        DeviceBuffer<std::int32_t> d_new_datatypes(new_count);
+        DeviceBuffer<std::int64_t> d_new_bboxes(new_count * 4);
+        DeviceBuffer<std::uint32_t> d_new_flags(new_count);
+        DeviceBuffer<std::uint64_t> d_new_hashes(new_count * 2);
+
+        if (old_count) {
+            check_cuda(cudaMemcpy(d_old_offsets.get(), old_offsets, sizeof(std::uint64_t) * (old_count + 1), cudaMemcpyHostToDevice), "copy old polygon offsets");
+            check_cuda(cudaMemcpy(d_old_layers.get(), old_layers, sizeof(std::int32_t) * old_count, cudaMemcpyHostToDevice), "copy old polygon layers");
+            check_cuda(cudaMemcpy(d_old_datatypes.get(), old_datatypes, sizeof(std::int32_t) * old_count, cudaMemcpyHostToDevice), "copy old polygon datatypes");
+            check_cuda(cudaMemcpy(d_old_bboxes.get(), old_bboxes, sizeof(std::int64_t) * old_count * 4, cudaMemcpyHostToDevice), "copy old polygon bboxes");
+            check_cuda(cudaMemcpy(d_old_flags.get(), old_flags, sizeof(std::uint32_t) * old_count, cudaMemcpyHostToDevice), "copy old polygon flags");
+            check_cuda(cudaMemcpy(d_old_hashes.get(), old_hashes, sizeof(std::uint64_t) * old_count * 2, cudaMemcpyHostToDevice), "copy old polygon hashes");
+        }
+        if (new_count) {
+            check_cuda(cudaMemcpy(d_new_offsets.get(), new_offsets, sizeof(std::uint64_t) * (new_count + 1), cudaMemcpyHostToDevice), "copy new polygon offsets");
+            check_cuda(cudaMemcpy(d_new_layers.get(), new_layers, sizeof(std::int32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon layers");
+            check_cuda(cudaMemcpy(d_new_datatypes.get(), new_datatypes, sizeof(std::int32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon datatypes");
+            check_cuda(cudaMemcpy(d_new_bboxes.get(), new_bboxes, sizeof(std::int64_t) * new_count * 4, cudaMemcpyHostToDevice), "copy new polygon bboxes");
+            check_cuda(cudaMemcpy(d_new_flags.get(), new_flags, sizeof(std::uint32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon flags");
+            check_cuda(cudaMemcpy(d_new_hashes.get(), new_hashes, sizeof(std::uint64_t) * new_count * 2, cudaMemcpyHostToDevice), "copy new polygon hashes");
+        }
+
+        thrust::device_vector<PolygonSideRecord> records(total_count);
+        const int threads = 256;
+        if (old_count) {
+            const int blocks = static_cast<int>((old_count + threads - 1) / threads);
+            polygon_record_key_from_hash_kernel<<<blocks, threads>>>(
+                d_old_offsets.get(),
+                d_old_layers.get(),
+                d_old_datatypes.get(),
+                d_old_bboxes.get(),
+                d_old_flags.get(),
+                d_old_hashes.get(),
+                old_count,
+                kOldSide,
+                0,
+                thrust::raw_pointer_cast(records.data()));
+            check_cuda(cudaGetLastError(), "launch old polygon hash record key kernel");
+        }
+        if (new_count) {
+            const int blocks = static_cast<int>((new_count + threads - 1) / threads);
+            polygon_record_key_from_hash_kernel<<<blocks, threads>>>(
+                d_new_offsets.get(),
+                d_new_layers.get(),
+                d_new_datatypes.get(),
+                d_new_bboxes.get(),
+                d_new_flags.get(),
+                d_new_hashes.get(),
+                new_count,
+                kNewSide,
+                old_count,
+                thrust::raw_pointer_cast(records.data()));
+            check_cuda(cudaGetLastError(), "launch new polygon hash record key kernel");
+        }
+        check_cuda(cudaDeviceSynchronize(), "run polygon hash record key kernels");
+        result->cuda_kernel_count = (old_count ? 1 : 0) + (new_count ? 1 : 0);
+
+        thrust::sort(records.begin(), records.end(), PolygonSideRecordLess{});
+        thrust::device_vector<PolygonRecordKey> keys(total_count);
+        thrust::device_vector<PolygonCountPair> pairs(total_count);
+        thrust::transform(records.begin(), records.end(), keys.begin(), PolygonRecordToKey{});
+        thrust::transform(records.begin(), records.end(), pairs.begin(), PolygonRecordToCountPair{});
+        thrust::device_vector<PolygonRecordKey> reduced_keys(total_count);
+        thrust::device_vector<PolygonCountPair> reduced_pairs(total_count);
+        auto ends = thrust::reduce_by_key(
+            keys.begin(),
+            keys.end(),
+            pairs.begin(),
+            reduced_keys.begin(),
+            reduced_pairs.begin(),
+            PolygonKeyEqual{},
+            PolygonCountPairAdd{});
+        const auto reduced_count = static_cast<std::size_t>(ends.first - reduced_keys.begin());
+        reduced_keys.resize(reduced_count);
+        reduced_pairs.resize(reduced_count);
+        result->reduced_key_count = reduced_count;
+
+        check_cuda(cudaEventRecord(event_stop), "record polygon hash delta stop event");
+        check_cuda(cudaEventSynchronize(event_stop), "synchronize polygon hash delta stop event");
+        check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure polygon hash delta elapsed time");
+
+        thrust::host_vector<PolygonRecordKey> host_keys = reduced_keys;
+        thrust::host_vector<PolygonCountPair> host_pairs = reduced_pairs;
+        struct HostDelta {
+            PolygonRecordKey key;
+            std::uint8_t direction;
+            std::uint64_t count;
+            std::uint64_t representative_index;
+        };
+        std::vector<HostDelta> deltas;
+        for (std::size_t i = 0; i < host_keys.size(); ++i) {
+            const auto old_side_count = host_pairs[i].old_count;
+            const auto new_side_count = host_pairs[i].new_count;
+            result->matched_record_count += std::min(old_side_count, new_side_count);
+            if (old_side_count > new_side_count) {
+                deltas.push_back(HostDelta{host_keys[i], kOldSide, old_side_count - new_side_count, host_pairs[i].old_index});
+            } else if (new_side_count > old_side_count) {
+                deltas.push_back(HostDelta{host_keys[i], kNewSide, new_side_count - old_side_count, host_pairs[i].new_index});
+            }
+        }
+        result->record_count = deltas.size();
+        if (!deltas.empty()) {
+            result->layers = static_cast<std::int32_t*>(std::malloc(sizeof(std::int32_t) * deltas.size()));
+            result->datatypes = static_cast<std::int32_t*>(std::malloc(sizeof(std::int32_t) * deltas.size()));
+            result->directions = static_cast<std::uint8_t*>(std::malloc(sizeof(std::uint8_t) * deltas.size()));
+            result->counts = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size()));
+            result->bboxes = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * deltas.size() * 4));
+            result->vertex_counts = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size()));
+            result->flags = static_cast<std::uint32_t*>(std::malloc(sizeof(std::uint32_t) * deltas.size()));
+            result->hashes = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size() * 2));
+            result->representative_indices = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * deltas.size()));
+            if (!result->layers || !result->datatypes || !result->directions || !result->counts || !result->bboxes
+                || !result->vertex_counts || !result->flags || !result->hashes || !result->representative_indices) {
+                throw std::bad_alloc();
+            }
+            for (std::size_t i = 0; i < deltas.size(); ++i) {
+                const auto& delta = deltas[i];
+                result->layers[i] = delta.key.layer;
+                result->datatypes[i] = delta.key.datatype;
+                result->directions[i] = delta.direction;
+                result->counts[i] = delta.count;
+                result->bboxes[i * 4 + 0] = delta.key.x0;
+                result->bboxes[i * 4 + 1] = delta.key.y0;
+                result->bboxes[i * 4 + 2] = delta.key.x1;
+                result->bboxes[i * 4 + 3] = delta.key.y1;
+                result->vertex_counts[i] = delta.key.vertex_count;
+                result->flags[i] = delta.key.flags;
+                result->hashes[i * 2 + 0] = delta.key.hash0;
+                result->hashes[i * 2 + 1] = delta.key.hash1;
+                result->representative_indices[i] = delta.representative_index;
+            }
+        }
+        cudaEventDestroy(event_start);
+        cudaEventDestroy(event_stop);
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = exc.what();
+        if (result) {
+            gds_cuda_free_polygon_record_delta_result(result);
+        }
+        return 1;
+    } catch (...) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = "unknown CUDA polygon hash record delta error";
         if (result) {
             gds_cuda_free_polygon_record_delta_result(result);
         }
@@ -3283,6 +3915,397 @@ int gds_cuda_boundary_loops_from_edges(
         g_last_error = "unknown CUDA boundary loop error";
         if (result) {
             gds_cuda_free_boundary_loop_result(result);
+        }
+        return 1;
+    }
+}
+
+int gds_cuda_axis_aligned_boundary_edges_from_polygons(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* fragment_offsets,
+    std::uint64_t fragment_count,
+    GdsCudaBoundaryEdgesResult* result) {
+    cudaEvent_t event_start = nullptr;
+    cudaEvent_t event_stop = nullptr;
+    try {
+        if (!result) {
+            throw std::invalid_argument("axis-aligned boundary edge result pointer is null");
+        }
+        *result = GdsCudaBoundaryEdgesResult{};
+        if (fragment_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!vertices_xy || !fragment_offsets) {
+            throw std::invalid_argument("axis-aligned boundary edge input contains null pointer");
+        }
+        const std::uint64_t vertex_count = fragment_offsets[fragment_count];
+        if (vertex_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+
+        check_cuda(cudaEventCreate(&event_start), "create axis boundary edge start event");
+        check_cuda(cudaEventCreate(&event_stop), "create axis boundary edge stop event");
+        check_cuda(cudaEventRecord(event_start), "record axis boundary edge start event");
+
+        DeviceBuffer<std::int64_t> d_vertices(vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_offsets(fragment_count + 1);
+        DeviceBuffer<AxisRawEdge> d_raw_edges(vertex_count);
+        DeviceBuffer<AxisEndpointKey> d_endpoint_storage(vertex_count * 2);
+        DeviceBuffer<std::uint32_t> d_error(1);
+        check_cuda(cudaMemcpy(d_vertices.get(), vertices_xy, sizeof(std::int64_t) * vertex_count * 2, cudaMemcpyHostToDevice), "copy axis boundary vertices");
+        check_cuda(cudaMemcpy(d_offsets.get(), fragment_offsets, sizeof(std::uint64_t) * (fragment_count + 1), cudaMemcpyHostToDevice), "copy axis boundary offsets");
+        check_cuda(cudaMemset(d_raw_edges.get(), 0, sizeof(AxisRawEdge) * vertex_count), "clear axis raw edges");
+        check_cuda(cudaMemset(d_error.get(), 0, sizeof(std::uint32_t)), "clear axis boundary error");
+
+        const int threads = 256;
+        const int fragment_blocks = static_cast<int>(std::min<std::uint64_t>((fragment_count + threads - 1) / threads, 65535));
+        axis_raw_edge_kernel<<<fragment_blocks, threads>>>(
+            d_vertices.get(),
+            d_offsets.get(),
+            fragment_count,
+            d_raw_edges.get(),
+            d_endpoint_storage.get(),
+            d_error.get());
+        check_cuda(cudaGetLastError(), "launch axis raw edge kernel");
+
+        std::uint32_t error = 0;
+        check_cuda(cudaMemcpy(&error, d_error.get(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost), "copy axis raw edge error");
+        if (error) {
+            throw std::runtime_error("axis-aligned boundary edge CUDA path received non-axis-aligned edge");
+        }
+
+        thrust::device_vector<AxisEndpointKey> d_endpoints(vertex_count * 2);
+        check_cuda(cudaMemcpy(thrust::raw_pointer_cast(d_endpoints.data()), d_endpoint_storage.get(), sizeof(AxisEndpointKey) * vertex_count * 2, cudaMemcpyDeviceToDevice), "copy axis endpoints to thrust vector");
+        auto valid_end = thrust::remove_if(d_endpoints.begin(), d_endpoints.end(), AxisEndpointInvalid{});
+        d_endpoints.erase(valid_end, d_endpoints.end());
+        if (d_endpoints.empty()) {
+            check_cuda(cudaEventRecord(event_stop), "record empty axis boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize empty axis boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure empty axis boundary edge elapsed time");
+            result->cuda_kernel_count = 1;
+            cudaEventDestroy(event_start);
+            cudaEventDestroy(event_stop);
+            g_last_error.clear();
+            return 0;
+        }
+        thrust::sort(d_endpoints.begin(), d_endpoints.end());
+        auto unique_end = thrust::unique(d_endpoints.begin(), d_endpoints.end());
+        d_endpoints.erase(unique_end, d_endpoints.end());
+        const std::uint64_t endpoint_count = d_endpoints.size();
+
+        DeviceBuffer<std::uint64_t> d_split_counts(vertex_count);
+        DeviceBuffer<std::uint64_t> d_split_offsets(vertex_count);
+        const int edge_blocks = static_cast<int>(std::min<std::uint64_t>((vertex_count + threads - 1) / threads, 65535));
+        axis_split_count_kernel<<<edge_blocks, threads>>>(
+            d_raw_edges.get(),
+            vertex_count,
+            thrust::raw_pointer_cast(d_endpoints.data()),
+            endpoint_count,
+            d_split_counts.get());
+        check_cuda(cudaGetLastError(), "launch axis split count kernel");
+        thrust::device_ptr<std::uint64_t> split_counts_begin(d_split_counts.get());
+        thrust::device_ptr<std::uint64_t> split_counts_end(d_split_counts.get() + vertex_count);
+        thrust::device_ptr<std::uint64_t> split_offsets_begin(d_split_offsets.get());
+        thrust::exclusive_scan(thrust::device, split_counts_begin, split_counts_end, split_offsets_begin);
+
+        std::uint64_t last_offset = 0;
+        std::uint64_t last_count = 0;
+        check_cuda(cudaMemcpy(&last_offset, d_split_offsets.get() + (vertex_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy axis split last offset");
+        check_cuda(cudaMemcpy(&last_count, d_split_counts.get() + (vertex_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy axis split last count");
+        if (last_count > std::numeric_limits<std::uint64_t>::max() - last_offset) {
+            throw std::overflow_error("axis split edge count overflow");
+        }
+        const std::uint64_t split_edge_count = last_offset + last_count;
+        result->cuda_kernel_count = 4;
+        if (split_edge_count == 0) {
+            check_cuda(cudaEventRecord(event_stop), "record no-split axis boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize no-split axis boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure no-split axis boundary edge elapsed time");
+            cudaEventDestroy(event_start);
+            cudaEventDestroy(event_stop);
+            g_last_error.clear();
+            return 0;
+        }
+
+        DeviceBuffer<EdgeKey> d_split_edges(split_edge_count);
+        axis_split_emit_kernel<<<edge_blocks, threads>>>(
+            d_raw_edges.get(),
+            vertex_count,
+            thrust::raw_pointer_cast(d_endpoints.data()),
+            endpoint_count,
+            d_split_offsets.get(),
+            d_split_edges.get());
+        check_cuda(cudaGetLastError(), "launch axis split emit kernel");
+
+        thrust::device_ptr<EdgeKey> split_begin(d_split_edges.get());
+        thrust::device_ptr<EdgeKey> split_end(d_split_edges.get() + split_edge_count);
+        thrust::sort(thrust::device, split_begin, split_end);
+        thrust::device_vector<EdgeKey> d_unique_edges(split_edge_count);
+        thrust::device_vector<std::uint64_t> d_unique_counts(split_edge_count);
+        auto reduce_end = thrust::reduce_by_key(
+            thrust::device,
+            split_begin,
+            split_end,
+            thrust::make_constant_iterator<std::uint64_t>(1),
+            d_unique_edges.begin(),
+            d_unique_counts.begin());
+        const std::uint64_t unique_count = reduce_end.first - d_unique_edges.begin();
+        if (unique_count == 0) {
+            check_cuda(cudaEventRecord(event_stop), "record no-unique axis boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize no-unique axis boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure no-unique axis boundary edge elapsed time");
+            cudaEventDestroy(event_start);
+            cudaEventDestroy(event_stop);
+            g_last_error.clear();
+            return 0;
+        }
+        d_unique_edges.resize(unique_count);
+        d_unique_counts.resize(unique_count);
+
+        thrust::device_vector<std::uint64_t> d_surplus_counts(unique_count);
+        const int unique_blocks = static_cast<int>(std::min<std::uint64_t>((unique_count + threads - 1) / threads, 65535));
+        edge_surplus_count_kernel<<<unique_blocks, threads>>>(
+            thrust::raw_pointer_cast(d_unique_edges.data()),
+            thrust::raw_pointer_cast(d_unique_counts.data()),
+            unique_count,
+            thrust::raw_pointer_cast(d_surplus_counts.data()));
+        check_cuda(cudaGetLastError(), "launch axis edge surplus count kernel");
+        thrust::device_vector<std::uint64_t> d_surplus_offsets(unique_count);
+        thrust::exclusive_scan(d_surplus_counts.begin(), d_surplus_counts.end(), d_surplus_offsets.begin());
+        check_cuda(cudaMemcpy(&last_offset, thrust::raw_pointer_cast(d_surplus_offsets.data()) + (unique_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy axis surplus last offset");
+        check_cuda(cudaMemcpy(&last_count, thrust::raw_pointer_cast(d_surplus_counts.data()) + (unique_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy axis surplus last count");
+        if (last_count > std::numeric_limits<std::uint64_t>::max() - last_offset) {
+            throw std::overflow_error("axis surplus edge count overflow");
+        }
+        result->edge_count = last_offset + last_count;
+        if (result->edge_count) {
+            DeviceBuffer<std::int64_t> d_out_edges(result->edge_count * 4);
+            edge_surplus_emit_kernel<<<unique_blocks, threads>>>(
+                thrust::raw_pointer_cast(d_unique_edges.data()),
+                thrust::raw_pointer_cast(d_surplus_counts.data()),
+                thrust::raw_pointer_cast(d_surplus_offsets.data()),
+                unique_count,
+                d_out_edges.get());
+            check_cuda(cudaGetLastError(), "launch axis edge surplus emit kernel");
+            check_cuda(cudaEventRecord(event_stop), "record axis boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize axis boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure axis boundary edge elapsed time");
+            result->edges = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * result->edge_count * 4));
+            if (!result->edges) {
+                throw std::runtime_error("axis boundary edge output allocation failed");
+            }
+            check_cuda(cudaMemcpy(result->edges, d_out_edges.get(), sizeof(std::int64_t) * result->edge_count * 4, cudaMemcpyDeviceToHost), "copy axis boundary edges");
+        } else {
+            check_cuda(cudaEventRecord(event_stop), "record empty-surplus axis boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize empty-surplus axis boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure empty-surplus axis boundary edge elapsed time");
+        }
+        result->cuda_kernel_count = 6;
+        cudaEventDestroy(event_start);
+        cudaEventDestroy(event_stop);
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = exc.what();
+        if (result) {
+            gds_cuda_free_boundary_edges_result(result);
+        }
+        return 1;
+    } catch (...) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = "unknown CUDA axis boundary edge error";
+        if (result) {
+            gds_cuda_free_boundary_edges_result(result);
+        }
+        return 1;
+    }
+}
+
+int gds_cuda_split_free_boundary_edges_from_polygons(
+    const std::int64_t* vertices_xy,
+    const std::uint64_t* fragment_offsets,
+    std::uint64_t fragment_count,
+    GdsCudaBoundaryEdgesResult* result) {
+    cudaEvent_t event_start = nullptr;
+    cudaEvent_t event_stop = nullptr;
+    try {
+        if (!result) {
+            throw std::invalid_argument("split-free boundary edge result pointer is null");
+        }
+        *result = GdsCudaBoundaryEdgesResult{};
+        if (fragment_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (!vertices_xy || !fragment_offsets) {
+            throw std::invalid_argument("split-free boundary edge input contains null pointer");
+        }
+        const std::uint64_t vertex_count = fragment_offsets[fragment_count];
+        if (vertex_count == 0) {
+            g_last_error.clear();
+            return 0;
+        }
+        if (vertex_count > 100000) {
+            throw std::overflow_error("split-free boundary edge input is too large for quadratic safety check");
+        }
+        if (vertex_count > std::numeric_limits<std::uint64_t>::max() / vertex_count) {
+            throw std::overflow_error("split-free boundary edge pair count overflow");
+        }
+
+        check_cuda(cudaEventCreate(&event_start), "create split-free boundary edge start event");
+        check_cuda(cudaEventCreate(&event_stop), "create split-free boundary edge stop event");
+        check_cuda(cudaEventRecord(event_start), "record split-free boundary edge start event");
+
+        DeviceBuffer<std::int64_t> d_vertices(vertex_count * 2);
+        DeviceBuffer<std::uint64_t> d_offsets(fragment_count + 1);
+        DeviceBuffer<EdgeKey> d_raw_edges(vertex_count);
+        DeviceBuffer<std::uint32_t> d_split_required(1);
+        check_cuda(cudaMemcpy(d_vertices.get(), vertices_xy, sizeof(std::int64_t) * vertex_count * 2, cudaMemcpyHostToDevice), "copy split-free boundary vertices");
+        check_cuda(cudaMemcpy(d_offsets.get(), fragment_offsets, sizeof(std::uint64_t) * (fragment_count + 1), cudaMemcpyHostToDevice), "copy split-free boundary offsets");
+        check_cuda(cudaMemset(d_raw_edges.get(), 0, sizeof(EdgeKey) * vertex_count), "clear split-free raw edges");
+        check_cuda(cudaMemset(d_split_required.get(), 0, sizeof(std::uint32_t)), "clear split-free required flag");
+
+        const int threads = 256;
+        const int fragment_blocks = static_cast<int>(std::min<std::uint64_t>((fragment_count + threads - 1) / threads, 65535));
+        split_free_raw_edge_kernel<<<fragment_blocks, threads>>>(
+            d_vertices.get(),
+            d_offsets.get(),
+            fragment_count,
+            d_raw_edges.get());
+        check_cuda(cudaGetLastError(), "launch split-free raw edge kernel");
+
+        const std::uint64_t total_pairs = vertex_count * vertex_count;
+        const int pair_blocks = static_cast<int>(std::min<std::uint64_t>((total_pairs + threads - 1) / threads, 65535));
+        split_free_required_kernel<<<pair_blocks, threads>>>(
+            d_raw_edges.get(),
+            vertex_count,
+            d_split_required.get());
+        check_cuda(cudaGetLastError(), "launch split-free required kernel");
+        std::uint32_t split_required = 0;
+        check_cuda(cudaMemcpy(&split_required, d_split_required.get(), sizeof(std::uint32_t), cudaMemcpyDeviceToHost), "copy split-free required flag");
+        if (split_required) {
+            throw std::runtime_error("split-free boundary edge CUDA path requires collinear splitting");
+        }
+
+        thrust::device_vector<EdgeKey> d_edges(vertex_count);
+        check_cuda(cudaMemcpy(thrust::raw_pointer_cast(d_edges.data()), d_raw_edges.get(), sizeof(EdgeKey) * vertex_count, cudaMemcpyDeviceToDevice), "copy split-free raw edges to thrust vector");
+        auto valid_end = thrust::remove_if(d_edges.begin(), d_edges.end(), EdgeInvalid{});
+        d_edges.erase(valid_end, d_edges.end());
+        if (d_edges.empty()) {
+            check_cuda(cudaEventRecord(event_stop), "record empty split-free boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize empty split-free boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure empty split-free boundary edge elapsed time");
+            result->cuda_kernel_count = 2;
+            cudaEventDestroy(event_start);
+            cudaEventDestroy(event_stop);
+            g_last_error.clear();
+            return 0;
+        }
+        thrust::sort(d_edges.begin(), d_edges.end());
+        const std::uint64_t edge_count = d_edges.size();
+        thrust::device_vector<EdgeKey> d_unique_edges(edge_count);
+        thrust::device_vector<std::uint64_t> d_unique_counts(edge_count);
+        auto reduce_end = thrust::reduce_by_key(
+            thrust::device,
+            d_edges.begin(),
+            d_edges.end(),
+            thrust::make_constant_iterator<std::uint64_t>(1),
+            d_unique_edges.begin(),
+            d_unique_counts.begin());
+        const std::uint64_t unique_count = reduce_end.first - d_unique_edges.begin();
+        if (unique_count == 0) {
+            check_cuda(cudaEventRecord(event_stop), "record no-unique split-free boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize no-unique split-free boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure no-unique split-free boundary edge elapsed time");
+            result->cuda_kernel_count = 2;
+            cudaEventDestroy(event_start);
+            cudaEventDestroy(event_stop);
+            g_last_error.clear();
+            return 0;
+        }
+        d_unique_edges.resize(unique_count);
+        d_unique_counts.resize(unique_count);
+
+        thrust::device_vector<std::uint64_t> d_surplus_counts(unique_count);
+        const int unique_blocks = static_cast<int>(std::min<std::uint64_t>((unique_count + threads - 1) / threads, 65535));
+        edge_surplus_count_kernel<<<unique_blocks, threads>>>(
+            thrust::raw_pointer_cast(d_unique_edges.data()),
+            thrust::raw_pointer_cast(d_unique_counts.data()),
+            unique_count,
+            thrust::raw_pointer_cast(d_surplus_counts.data()));
+        check_cuda(cudaGetLastError(), "launch split-free edge surplus count kernel");
+        thrust::device_vector<std::uint64_t> d_surplus_offsets(unique_count);
+        thrust::exclusive_scan(d_surplus_counts.begin(), d_surplus_counts.end(), d_surplus_offsets.begin());
+        std::uint64_t last_offset = 0;
+        std::uint64_t last_count = 0;
+        check_cuda(cudaMemcpy(&last_offset, thrust::raw_pointer_cast(d_surplus_offsets.data()) + (unique_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy split-free surplus last offset");
+        check_cuda(cudaMemcpy(&last_count, thrust::raw_pointer_cast(d_surplus_counts.data()) + (unique_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy split-free surplus last count");
+        if (last_count > std::numeric_limits<std::uint64_t>::max() - last_offset) {
+            throw std::overflow_error("split-free surplus edge count overflow");
+        }
+        result->edge_count = last_offset + last_count;
+        if (result->edge_count) {
+            DeviceBuffer<std::int64_t> d_out_edges(result->edge_count * 4);
+            edge_surplus_emit_kernel<<<unique_blocks, threads>>>(
+                thrust::raw_pointer_cast(d_unique_edges.data()),
+                thrust::raw_pointer_cast(d_surplus_counts.data()),
+                thrust::raw_pointer_cast(d_surplus_offsets.data()),
+                unique_count,
+                d_out_edges.get());
+            check_cuda(cudaGetLastError(), "launch split-free edge surplus emit kernel");
+            check_cuda(cudaEventRecord(event_stop), "record split-free boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize split-free boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure split-free boundary edge elapsed time");
+            result->edges = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * result->edge_count * 4));
+            if (!result->edges) {
+                throw std::runtime_error("split-free boundary edge output allocation failed");
+            }
+            check_cuda(cudaMemcpy(result->edges, d_out_edges.get(), sizeof(std::int64_t) * result->edge_count * 4, cudaMemcpyDeviceToHost), "copy split-free boundary edges");
+        } else {
+            check_cuda(cudaEventRecord(event_stop), "record empty-surplus split-free boundary edge stop event");
+            check_cuda(cudaEventSynchronize(event_stop), "synchronize empty-surplus split-free boundary edge stop event");
+            check_cuda(cudaEventElapsedTime(&result->cuda_event_elapsed_ms, event_start, event_stop), "measure empty-surplus split-free boundary edge elapsed time");
+        }
+        result->cuda_kernel_count = 5;
+        cudaEventDestroy(event_start);
+        cudaEventDestroy(event_stop);
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = exc.what();
+        if (result) {
+            gds_cuda_free_boundary_edges_result(result);
+        }
+        return 1;
+    } catch (...) {
+        if (event_start) {
+            cudaEventDestroy(event_start);
+        }
+        if (event_stop) {
+            cudaEventDestroy(event_stop);
+        }
+        g_last_error = "unknown CUDA split-free boundary edge error";
+        if (result) {
+            gds_cuda_free_boundary_edges_result(result);
         }
         return 1;
     }

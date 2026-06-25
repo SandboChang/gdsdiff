@@ -4,8 +4,6 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Iterable
 
-import gdstk
-
 from .config import LayerSpec
 from .geometry import normalize_polygon_points
 from .spatial import BBox, bbox_union
