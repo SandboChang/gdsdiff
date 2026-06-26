@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace gds_gpu_compare {
+namespace gdsdiff {
 
 struct CudaMemoryBudget {
     std::uint64_t max_assignment_bytes = 256ull * 1024ull * 1024ull;
@@ -31,4 +31,4 @@ CudaChunkedCandidateResult run_cuda_candidate_compaction_chunked(
     const TileConfig& config,
     const CudaMemoryBudget& budget);
 
-}  // namespace gds_gpu_compare
+}  // namespace gdsdiff

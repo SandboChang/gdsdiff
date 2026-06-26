@@ -8,7 +8,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace gds_gpu_compare {
+namespace gdsdiff {
 namespace {
 
 struct IndexedPolygon {
@@ -191,4 +191,4 @@ CudaChunkedCandidateResult run_cuda_candidate_compaction_chunked(
     return result;
 }
 
-}  // namespace gds_gpu_compare
+}  // namespace gdsdiff

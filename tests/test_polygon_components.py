@@ -4,7 +4,7 @@ import gdstk
 import numpy as np
 import pytest
 
-from gds_tools_tk.gpu_compare.backends.cuda_ctypes import (
+from gds_tools_tk.gdsdiff.backends.cuda_ctypes import (
     CudaCtypesUnavailable,
     cuda_ctypes_available,
     run_cuda_axis_aligned_boundary_edges_from_fragments,
@@ -18,21 +18,21 @@ from gds_tools_tk.gpu_compare.backends.cuda_ctypes import (
     run_cuda_polygon_record_delta,
     run_cuda_split_free_boundary_edges_from_fragments,
 )
-from gds_tools_tk.gpu_compare.backends.boundary_loop_ctypes import (
+from gds_tools_tk.gdsdiff.backends.boundary_loop_ctypes import (
     boundary_loop_ctypes_available,
     native_boundary_edges_from_fragments,
     native_boundary_loops_from_edges,
 )
-from gds_tools_tk.gpu_compare.backends.polygon_extract_ctypes import extract_gds_polygons_native
-from gds_tools_tk.gpu_compare.config import LayerSpec
-from gds_tools_tk.gpu_compare.exact_oracle import DiffFragment
-from gds_tools_tk.gpu_compare.geometry import polygon_bbox, polygon_twice_area
-from gds_tools_tk.gpu_compare.polygon_components import (
+from gds_tools_tk.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
+from gds_tools_tk.gdsdiff.config import LayerSpec
+from gds_tools_tk.gdsdiff.exact_oracle import DiffFragment
+from gds_tools_tk.gdsdiff.geometry import polygon_bbox, polygon_twice_area
+from gds_tools_tk.gdsdiff.polygon_components import (
     add_overlapping_context_to_components,
     build_record_delta_surplus_components,
     exact_result_from_component_quads,
 )
-from gds_tools_tk.gpu_compare.source_edge_diff import (
+from gds_tools_tk.gdsdiff.source_edge_diff import (
     _boundary_edges_for_direction,
     _boundary_edges_for_one_sided_union,
     _build_segments,

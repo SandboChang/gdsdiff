@@ -8,7 +8,7 @@ import gdstk
 
 
 ROOT = Path(__file__).resolve().parents[3]
-BENCHMARK_PATH = ROOT / "benchmarks" / "gpu_compare" / "run_benchmarks.py"
+BENCHMARK_PATH = ROOT / "benchmarks" / "gdsdiff" / "run_benchmarks.py"
 SPEC = importlib.util.spec_from_file_location("run_gds_benchmarks", BENCHMARK_PATH)
 benchmarks = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -63,4 +63,4 @@ def test_benchmark_cli_writes_json(tmp_path):
 
     assert exit_code == 0
     text = output.read_text(encoding="utf-8")
-    assert "gds-gpu-compare-benchmark-v1" in text
+    assert "gdsdiff-benchmark-v1" in text

@@ -820,6 +820,8 @@ def _sidecar_ref(sidecar_refs: Mapping[object, str] | None, record: object) -> s
 
 def _default_vertex_sidecar_path(path: Path) -> Path:
     stem = path.stem
+    if stem == "exact_diff":
+        return path.with_name("diff_vertices.jsonl")
     if stem.endswith("_exact_diff"):
         stem = stem[: -len("_exact_diff")]
     return path.with_name(f"{stem}_diff_vertices.jsonl")

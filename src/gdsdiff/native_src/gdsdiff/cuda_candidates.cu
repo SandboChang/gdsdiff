@@ -15,7 +15,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace gds_gpu_compare {
+namespace gdsdiff {
 namespace {
 
 struct AssignmentKey {
@@ -130,4 +130,4 @@ TilePrefilterResult run_cuda_candidate_compaction(
     return result;
 }
 
-}  // namespace gds_gpu_compare
+}  // namespace gdsdiff

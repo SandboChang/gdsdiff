@@ -7,7 +7,7 @@ import sys
 import gdstk
 import pytest
 
-from gds_tools_tk.gpu_compare.native import discover_native_capabilities
+from gds_tools_tk.gdsdiff.native import discover_native_capabilities
 
 
 def _write_pair(tmp_path):
@@ -24,7 +24,7 @@ def _write_pair(tmp_path):
     return old_path, new_path
 
 
-def test_cli_writes_requested_artifacts_for_allowed_difference(tmp_path):
+def test_cli_writes_requested_artifacts_for_difference(tmp_path):
     old_path, new_path = _write_pair(tmp_path)
     report_path = tmp_path / "report.json"
     diff_path = tmp_path / "diff.gds"
@@ -35,7 +35,7 @@ def test_cli_writes_requested_artifacts_for_allowed_difference(tmp_path):
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.gpu_compare",
+            "gds_tools_tk.gdsdiff",
             str(old_path),
             str(new_path),
             "--tile-size",
@@ -56,32 +56,77 @@ def test_cli_writes_requested_artifacts_for_allowed_difference(tmp_path):
         capture_output=True,
     )
 
-    assert completed.returncode == 0
-    assert "status=expected-differences-only" in completed.stdout
+    assert completed.returncode == 1
+    assert "status=differences-found" in completed.stdout
+    assert "evidence_status=differences-found" in completed.stdout
     data = json.loads(report_path.read_text(encoding="utf-8"))
-    assert data["status"] == "expected-differences-only"
-    assert data["artifacts"]["diff_gds"] == str(diff_path)
+    assert data["status"] == "differences-found"
+    assert data["evidence_status"] == "differences-found"
     assert data["artifacts"]["exact_diff_markdown"] == str(exact_diff_markdown_path)
-    assert diff_path.exists()
-    assert "GDS comparator result" in markdown_path.read_text(encoding="utf-8")
+    assert "GDS comparator" in markdown_path.read_text(encoding="utf-8")
     exact_diff_markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
     assert "## Polygon Components" in exact_diff_markdown
     assert "vertices_preview_dbu" in exact_diff_markdown
     assert "points_sha256" in exact_diff_markdown
 
 
-def test_cli_returns_one_for_unexpected_difference(tmp_path):
+def test_gdsdiff_output_dir_writes_neutral_artifact_set_with_cpu_backend(tmp_path):
     old_path, new_path = _write_pair(tmp_path)
+    output_dir = tmp_path / "gdsdiff_run"
 
     completed = subprocess.run(
-        [sys.executable, "-m", "gds_tools_tk.gpu_compare", str(old_path), str(new_path), "--tile-size", "10"],
+        [
+            sys.executable,
+            "-c",
+            "from gds_tools_tk.gdsdiff.cli import main; raise SystemExit(main())",
+            str(old_path),
+            str(new_path),
+            "--backend",
+            "cpu",
+            "--output-dir",
+            str(output_dir),
+        ],
         check=False,
         text=True,
         capture_output=True,
     )
 
     assert completed.returncode == 1
-    assert "status=unexpected-differences" in completed.stdout
+    assert "status=differences-found" in completed.stdout
+    assert "evidence_status=differences-found" in completed.stdout
+    assert "differences_found=true" in completed.stdout
+    report_path = output_dir / "report.json"
+    exact_diff_markdown_path = output_dir / "exact_diff.md"
+    sidecar_path = output_dir / "diff_vertices.jsonl"
+    assert report_path.exists()
+    assert exact_diff_markdown_path.exists()
+    assert sidecar_path.exists()
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    assert data["status"] == "differences-found"
+    assert data["evidence_status"] == "differences-found"
+    assert data["backend"]["name"] == "cpu"
+    assert data["backend"]["evidence_engine_selected"] == "gdstk-oracle"
+    assert data["artifacts"]["exact_diff_markdown"] == str(exact_diff_markdown_path)
+    assert data["artifacts"]["vertex_sidecar"] == str(sidecar_path)
+    markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
+    assert "## Agent Minimal Read" in markdown
+    assert "coverage_before_only" in markdown
+    assert sidecar_path.read_text(encoding="utf-8").strip()
+
+
+def test_cli_returns_one_for_unexpected_difference(tmp_path):
+    old_path, new_path = _write_pair(tmp_path)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "gds_tools_tk.gdsdiff", str(old_path), str(new_path), "--tile-size", "10"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 1
+    assert "status=differences-found" in completed.stdout
+    assert "evidence_status=differences-found" in completed.stdout
 
 
 def test_cli_exact_component_backend_reports_stats(tmp_path):
@@ -92,7 +137,7 @@ def test_cli_exact_component_backend_reports_stats(tmp_path):
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.gpu_compare",
+            "gds_tools_tk.gdsdiff",
             str(old_path),
             str(new_path),
             "--exact",
@@ -126,7 +171,7 @@ def test_cli_cuda_exact_component_backend_reports_stats_when_available(tmp_path)
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.gpu_compare",
+            "gds_tools_tk.gdsdiff",
             str(old_path),
             str(new_path),
             "--exact",
@@ -160,7 +205,7 @@ def test_cli_gpu_polygon_engine_uses_exact_cuda_rect_coverage_for_rectangle_inpu
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.gpu_compare",
+            "gds_tools_tk.gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",
@@ -215,7 +260,7 @@ def test_cli_gpu_polygon_engine_uses_source_edge_records_for_non_rectangle_witho
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.gpu_compare",
+            "gds_tools_tk.gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",
@@ -261,7 +306,7 @@ def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.gpu_compare",
+            "gds_tools_tk.gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",
@@ -300,14 +345,15 @@ def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
 
 def test_cli_returns_two_for_invalid_input(tmp_path):
     completed = subprocess.run(
-        [sys.executable, "-m", "gds_tools_tk.gpu_compare", str(tmp_path / "missing.gds"), str(tmp_path / "also_missing.gds")],
+        [sys.executable, "-m", "gds_tools_tk.gdsdiff", str(tmp_path / "missing.gds"), str(tmp_path / "also_missing.gds")],
         check=False,
         text=True,
         capture_output=True,
     )
 
     assert completed.returncode == 2
-    assert "gds-gpu-compare:" in completed.stderr
+    assert "status=unsupported-input" in completed.stdout
+    assert "evidence_status=unsupported-input" in completed.stdout
 
 
 def test_cli_verify_exact_after_fast_attaches_exact_evidence_when_cuda_available(tmp_path):
@@ -321,7 +367,7 @@ def test_cli_verify_exact_after_fast_attaches_exact_evidence_when_cuda_available
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.gpu_compare",
+            "gds_tools_tk.gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",
@@ -342,9 +388,9 @@ def test_cli_verify_exact_after_fast_attaches_exact_evidence_when_cuda_available
     assert completed.returncode == 1
     data = json.loads(report_path.read_text(encoding="utf-8"))
     assert data["exact_verification_complete"] is True
-    assert data["exact_fallback"]["mode"] == "native-geometry-fast-plus-full-exact"
-    assert data["backend"]["native_geometry_guard"] is True
-    assert data["backend"]["exact_verification_after_fast"] is True
+    assert data["exact_fallback"]["mode"] == "gpu-polygon-cuda-rect-coverage"
+    assert data["backend"]["evidence_engine_selected"] == "gpu-polygon"
+    assert data["backend"]["gpu_polygon_available"] is True
     markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
     assert "- exact_verification_complete: `true`" in markdown
     assert "vertices_preview_dbu" in markdown

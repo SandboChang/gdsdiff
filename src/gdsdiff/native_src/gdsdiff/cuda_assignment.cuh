@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace gds_gpu_compare {
+namespace gdsdiff {
 
 struct TileAssignment {
     LayerSpec layer;
@@ -30,4 +30,4 @@ CudaAssignmentResult run_cuda_assignment(
     std::uint8_t side,
     const TileConfig& config);
 
-}  // namespace gds_gpu_compare
+}  // namespace gdsdiff

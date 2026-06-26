@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from gds_tools_tk.gpu_compare import (
+from gds_tools_tk.gdsdiff import (
     AllowedRegion,
     Backend,
     CompareConfig,

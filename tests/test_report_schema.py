@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from gds_tools_tk.gpu_compare import (
+from gds_tools_tk.gdsdiff import (
     CompareReport,
     CompareStatus,
     ComponentSummary,
@@ -44,7 +44,7 @@ def test_equivalent_report_validates_and_serializes():
 
     payload = report.to_json_dict()
 
-    assert payload["schema_version"] == "gds-gpu-compare-report-v1"
+    assert payload["schema_version"] == "gdsdiff-report-v1"
     assert payload["status"] == "equivalent"
     assert payload["exit_code_category"] == 0
     assert payload["exact_verification_complete"] is True
@@ -125,9 +125,9 @@ def test_missing_exact_verification_flag_is_rejected():
 
 def test_write_json_is_atomic_and_readable(tmp_path):
     path = tmp_path / "report.json"
-    written = _base_report(command=("gds-gpu-compare", "--old", "old.gds")).write_json(path)
+    written = _base_report(command=("gdsdiff", "--old", "old.gds")).write_json(path)
 
     assert written == path
     payload = json.loads(path.read_text())
-    assert payload["command"] == ["gds-gpu-compare", "--old", "old.gds"]
+    assert payload["command"] == ["gdsdiff", "--old", "old.gds"]
     validate_report_dict(payload)

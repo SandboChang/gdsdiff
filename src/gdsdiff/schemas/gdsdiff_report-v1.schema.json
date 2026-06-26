@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "gds_gpu_compare_report-v1.schema.json",
+  "$id": "gdsdiff_report-v1.schema.json",
   "title": "GDS GPU Compare Report v1",
   "type": "object",
   "required": [
@@ -26,7 +26,7 @@
     "artifacts"
   ],
   "properties": {
-    "schema_version": { "const": "gds-gpu-compare-report-v1" },
+    "schema_version": { "const": "gdsdiff-report-v1" },
     "tool_version": { "type": "string" },
     "command": { "type": "array", "items": { "type": "string" } },
     "status": {

@@ -4,8 +4,8 @@ import csv
 
 import gdstk
 
-from gds_tools_tk.gpu_compare import AssemblyProfile, CompareConfig, combined_profile_summary, compare_gds_files
-from gds_tools_tk.gpu_compare.profiles import calibrator_model1_profile, check_assembly_profile
+from gds_tools_tk.gdsdiff import AssemblyProfile, CompareConfig, combined_profile_summary, compare_gds_files
+from gds_tools_tk.gdsdiff.profiles import calibrator_model1_profile, check_assembly_profile
 from gds_tools_tk.tests.golden_gds import ROOT
 
 

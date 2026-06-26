@@ -12,7 +12,7 @@ the final proof of geometry equality.
 Run the package CLI from the repository root:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.gpu_compare references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_after.gds --top chip --tile-size 256 --json-report outputs/chip2_compare.json --diff-gds outputs/chip2_diff.gds
+.venv/bin/python -m gds_tools_tk.gdsdiff references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_after.gds --top chip --tile-size 256 --json-report outputs/chip2_compare.json --diff-gds outputs/chip2_diff.gds
 ```
 
 Exit codes:
@@ -77,7 +77,7 @@ backup/readback policy and produces one machine-readable verdict.
 Run the benchmark harness with:
 
 ```bash
-.venv/bin/python benchmarks/gpu_compare/run_benchmarks.py --max-pairs 1 --mode windowed --tile-size 256 --output /tmp/gds_gpu_compare_benchmark_smoke.json
+.venv/bin/python benchmarks/gdsdiff/run_benchmarks.py --max-pairs 1 --mode windowed --tile-size 256 --output /tmp/gdsdiff_benchmark_smoke.json
 ```
 
 Benchmark rows include wall-clock time plus comparator extraction/exact/total

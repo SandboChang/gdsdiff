@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from gds_tools_tk.gpu_compare import windowed_exact
-from gds_tools_tk.gpu_compare import (
+from gds_tools_tk.gdsdiff import windowed_exact
+from gds_tools_tk.gdsdiff import (
     CandidateWindow,
     LayerSpec,
     SpatialIndex,
@@ -11,7 +11,7 @@ from gds_tools_tk.gpu_compare import (
     run_full_exact_oracle,
     run_windowed_exact_oracle,
 )
-from gds_tools_tk.gpu_compare.geometry import LayerTable, PolygonBuffer
+from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

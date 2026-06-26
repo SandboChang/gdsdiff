@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from gds_tools_tk.gpu_compare.boundary_loops import assemble_boundary_loops
-from gds_tools_tk.gpu_compare.exact_oracle import DiffFragment
-from gds_tools_tk.gpu_compare.geometry import polygon_bbox, polygon_twice_area
+from gds_tools_tk.gdsdiff.boundary_loops import assemble_boundary_loops
+from gds_tools_tk.gdsdiff.exact_oracle import DiffFragment
+from gds_tools_tk.gdsdiff.geometry import polygon_bbox, polygon_twice_area
 
 
 def test_assemble_boundary_loops_merges_adjacent_rectangles():

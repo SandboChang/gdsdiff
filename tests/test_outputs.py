@@ -7,7 +7,7 @@ import gdstk
 import numpy as np
 import pytest
 
-from gds_tools_tk.gpu_compare import (
+from gds_tools_tk.gdsdiff import (
     AllowedRegion,
     CompareReport,
     CompareStatus,
@@ -25,8 +25,8 @@ from gds_tools_tk.gpu_compare import (
     write_diff_gds,
     write_exact_diff_markdown,
 )
-from gds_tools_tk.gpu_compare.geometry import LayerTable, PolygonBuffer, polygon_bbox, polygon_twice_area
-from gds_tools_tk.gpu_compare.report import build_layer_reports
+from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer, polygon_bbox, polygon_twice_area
+from gds_tools_tk.gdsdiff.report import build_layer_reports
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):
@@ -170,7 +170,7 @@ def test_design_history_markdown_is_stable():
         "GPU comparator check",
         policy,
         diff_gds_path="outputs/diff.gds",
-        tests_run=("pytest gpu_compare",),
+        tests_run=("pytest gdsdiff",),
         notes=("classified crossing geometry exactly",),
         entry_date=date(2026, 6, 24),
     )
@@ -183,7 +183,7 @@ def test_design_history_markdown_is_stable():
         "- Unexpected diff area dbu^2: 20.\n"
         "- Diff GDS: `outputs/diff.gds`.\n"
         "- Tests run:\n"
-        "  - `pytest gpu_compare`\n"
+        "  - `pytest gdsdiff`\n"
         "- Notes:\n"
         "  - classified crossing geometry exactly\n"
         "- Layer summary:\n"
@@ -339,7 +339,7 @@ def test_json_write_failure_does_not_replace_existing_target(tmp_path, monkeypat
     def fail_replace(source, destination):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("gds_tools_tk.gpu_compare.report.os.replace", fail_replace)
+    monkeypatch.setattr("gds_tools_tk.gdsdiff.report.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated"):
         report.write_json(target)

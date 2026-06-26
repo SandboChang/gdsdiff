@@ -446,7 +446,7 @@ def compare_gds_files(
             "GDS comparator result",
             policy_result,
             diff_gds_path=artifacts.get("diff_gds"),
-            tests_run=("gds-gpu-compare",),
+            tests_run=("gdsdiff",),
         )
         markdown_path = Path(markdown_path)
         markdown_path.parent.mkdir(parents=True, exist_ok=True)
@@ -707,7 +707,7 @@ def _try_native_structural_guard_path(
             render_design_history_entry(
                 "GDS comparator structural-guard result",
                 policy_result,
-                tests_run=("gds-gpu-compare structural-guard",),
+                tests_run=("gdsdiff structural-guard",),
                 notes=warnings,
             ),
             encoding="utf-8",
@@ -878,7 +878,7 @@ def _try_native_geometry_guard_path(
             render_design_history_entry(
                 "GDS comparator native-geometry-guard result",
                 policy_result,
-                tests_run=("gds-gpu-compare native-geometry-guard",),
+                tests_run=("gdsdiff native-geometry-guard",),
                 notes=warnings,
             ),
             encoding="utf-8",
@@ -965,7 +965,8 @@ def _try_gpu_polygon_evidence_path(
     polygon_component_area = None
     polygon_inventory_delta = None
 
-    if audit_cpu_oracle and not backend_info.get("cuda_ctypes_available"):
+    cpu_neutral_fallback = backend_info.get("name") == Backend.CPU.value
+    if cpu_neutral_fallback or (audit_cpu_oracle and not backend_info.get("cuda_ctypes_available")):
         audit_start = perf_counter()
         audit_backend = _default_cpu_audit_component_backend(exact_component_backend)
         verification = _run_full_exact_verification(
@@ -989,16 +990,26 @@ def _try_gpu_polygon_evidence_path(
         polygon_inventory_delta = verification.polygon_inventory_delta
         exact_complete = True
         warnings = (
-            "Requested gpu-polygon evidence engine is not implemented yet; CPU gdstk oracle audit was run explicitly via --audit-cpu-oracle.",
+            (
+                "No suitable GPU backend was selected; CPU gdstk oracle produced complete neutral exact evidence."
+                if cpu_neutral_fallback
+                else "Requested gpu-polygon evidence engine is not implemented yet; CPU gdstk oracle audit was run explicitly via --audit-cpu-oracle."
+            ),
         )
         exact_fallback = {
-            "mode": "gpu-polygon-unavailable-plus-cpu-oracle-audit",
-            "engine": "gpu-polygon",
-            "engine_status": "not-implemented",
-            "audit_cpu_oracle": True,
+            "mode": (
+                "cpu-gdstk-oracle-neutral-fallback"
+                if cpu_neutral_fallback
+                else "gpu-polygon-unavailable-plus-cpu-oracle-audit"
+            ),
+            "engine": "gdstk-oracle" if cpu_neutral_fallback else "gpu-polygon",
+            "engine_status": "complete" if cpu_neutral_fallback else "not-implemented",
+            "audit_cpu_oracle": not cpu_neutral_fallback,
             "window_count": 0,
             "escalated_layers": [],
-            "failures": [
+            "failures": []
+            if cpu_neutral_fallback
+            else [
                 {
                     "reason": "gpu-polygon exact numeric diff record engine is not implemented yet",
                 }
@@ -1014,7 +1025,11 @@ def _try_gpu_polygon_evidence_path(
             markdown_written = write_exact_diff_markdown(
                 policy_result,
                 exact_diff_markdown_path,
-                title="GDS comparator CPU-audited gpu-polygon exact diff",
+                title=(
+                    "GDS comparator CPU fallback exact diff"
+                    if cpu_neutral_fallback
+                    else "GDS comparator CPU-audited gpu-polygon exact diff"
+                ),
                 source_mode=exact_fallback["mode"],
                 exact_verification_complete=True,
                 polygon_inventory_delta=polygon_inventory_delta,
@@ -1399,8 +1414,11 @@ def _try_gpu_polygon_evidence_path(
         | {
             "exact_mode": False,
             "evidence_engine_requested": config.evidence_engine.value,
-            "evidence_engine_selected": "gpu-polygon",
-            "gpu_polygon_available": coverage_result is not None or polygon_fragment_exact_result is not None,
+            "evidence_engine_selected": "gdstk-oracle" if cpu_neutral_fallback else "gpu-polygon",
+            "gpu_polygon_available": (
+                False if cpu_neutral_fallback else coverage_result is not None or polygon_fragment_exact_result is not None
+            ),
+            "cpu_neutral_fallback": cpu_neutral_fallback,
             "gpu_record_delta_available": record_delta is not None,
             "canonical_surplus_coverage_available": surplus_result is not None,
             "canonical_surplus_coverage_exact": (
@@ -1877,7 +1895,7 @@ def _try_pair_verdict_cache_path(
             render_design_history_entry(
                 "GDS comparator cached geometry-prefilter result",
                 policy_result,
-                tests_run=("gds-gpu-compare geometry-cache",),
+                tests_run=("gdsdiff geometry-cache",),
                 notes=warnings,
             ),
             encoding="utf-8",
@@ -2034,7 +2052,7 @@ def _try_cuda_hierarchy_fast_path(
             render_design_history_entry(
                 "GDS comparator hierarchy-fast result",
                 policy_result,
-                tests_run=("gds-gpu-compare hierarchy-fast",),
+                tests_run=("gdsdiff hierarchy-fast",),
                 notes=warnings,
             ),
             encoding="utf-8",
@@ -2172,7 +2190,7 @@ def _try_accelerated_byte_identity_fast_path(
             render_design_history_entry(
                 "GDS comparator accelerated-byte-identity result",
                 policy_result,
-                tests_run=("gds-gpu-compare accelerated-byte-identity",),
+                tests_run=("gdsdiff accelerated-byte-identity",),
                 notes=warnings,
             ),
             encoding="utf-8",

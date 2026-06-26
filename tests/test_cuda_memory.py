@@ -12,7 +12,7 @@ def test_cuda_chunked_candidate_compaction_matches_whole_batch(tmp_path):
     if nvcc is None:
         pytest.skip("nvcc is not available")
     repo = Path(__file__).resolve().parents[3]
-    source_dir = repo / "gds_tools_tk" / "gpu_compare" / "native_src" / "gds_gpu_compare"
+    source_dir = repo / "gds_tools_tk" / "gdsdiff" / "native_src" / "gdsdiff"
     binary = tmp_path / "test_cuda_memory"
 
     compile_result = subprocess.run(

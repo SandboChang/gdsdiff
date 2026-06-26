@@ -18,9 +18,9 @@ from .spatial import SpatialIndex
 from .tiling import CpuTilePrefilterResult
 from .windows import CandidateWindow
 
-CACHE_SCHEMA_VERSION = "gds-gpu-compare-geometry-cache-v1"
-NATIVE_POLYGON_CACHE_SCHEMA_VERSION = "gds-gpu-compare-native-polygon-cache-v1"
-PAIR_VERDICT_SCHEMA_VERSION = "gds-gpu-compare-pair-verdict-cache-v2"
+CACHE_SCHEMA_VERSION = "gdsdiff-geometry-cache-v1"
+NATIVE_POLYGON_CACHE_SCHEMA_VERSION = "gdsdiff-native-polygon-cache-v1"
+PAIR_VERDICT_SCHEMA_VERSION = "gdsdiff-pair-verdict-cache-v2"
 
 
 @dataclass(frozen=True)

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from gds_tools_tk.gpu_compare import canonicalize_polygon, intern_polygons
-from gds_tools_tk.gpu_compare.geometry import LayerTable, PolygonBuffer
-from gds_tools_tk.gpu_compare.config import LayerSpec
+from gds_tools_tk.gdsdiff import canonicalize_polygon, intern_polygons
+from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer
+from gds_tools_tk.gdsdiff.config import LayerSpec
 
 
 def _buffer(polygons, flags=None):

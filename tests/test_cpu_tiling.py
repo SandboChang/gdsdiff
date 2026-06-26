@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gds_tools_tk.gpu_compare import (
+from gds_tools_tk.gdsdiff import (
     LayerSpec,
     TileConfig,
     TileKey,
@@ -11,8 +11,8 @@ from gds_tools_tk.gpu_compare import (
     floor_div,
     run_cpu_tile_prefilter,
 )
-from gds_tools_tk.gpu_compare.backends.cpu import CpuTileBackend
-from gds_tools_tk.gpu_compare.geometry import LayerTable, PolygonBuffer
+from gds_tools_tk.gdsdiff.backends.cpu import CpuTileBackend
+from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

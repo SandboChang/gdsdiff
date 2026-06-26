@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from gds_tools_tk.gpu_compare import LayerSpec, extract_gds_polygons, format_twice_area, run_full_exact_oracle
+from gds_tools_tk.gdsdiff import LayerSpec, extract_gds_polygons, format_twice_area, run_full_exact_oracle
 
 from .fixtures import fixture_cases, write_fixture_pair
 

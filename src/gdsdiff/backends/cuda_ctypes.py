@@ -1246,4 +1246,4 @@ def _library_path() -> Path:
 
 
 def _source_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "native_src" / "gds_gpu_compare" / "cuda_ctypes.cu"
+    return Path(__file__).resolve().parents[1] / "native_src" / "gdsdiff" / "cuda_ctypes.cu"

@@ -12,7 +12,7 @@ from .exact_oracle import ExactOracleResult, format_twice_area
 from .policy import PolicyClassificationResult
 from .semantics import CompareStatus, FailurePolicy, exit_code_for_status
 
-REPORT_SCHEMA_VERSION = "gds-gpu-compare-report-v1"
+REPORT_SCHEMA_VERSION = "gdsdiff-report-v1"
 TOOL_VERSION = "0.1.0-dev"
 
 

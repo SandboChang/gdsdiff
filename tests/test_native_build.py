@@ -4,8 +4,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-from gds_tools_tk import gpu_compare
-from gds_tools_tk.gpu_compare.native import CUDA_ARCH_ENV, discover_native_capabilities
+from gds_tools_tk import gdsdiff
+from gds_tools_tk.gdsdiff.native import CUDA_ARCH_ENV, discover_native_capabilities
 
 
 def _repo_root() -> Path:
@@ -13,9 +13,9 @@ def _repo_root() -> Path:
 
 
 def test_package_import_does_not_import_optional_native_or_cuda_extensions():
-    assert "gds_tools_tk.gpu_compare._gds_compare_core" not in sys.modules
-    assert "gds_tools_tk.gpu_compare._gds_compare_cuda" not in sys.modules
-    assert callable(gpu_compare.discover_native_capabilities)
+    assert "gds_tools_tk.gdsdiff._gds_compare_core" not in sys.modules
+    assert "gds_tools_tk.gdsdiff._gds_compare_cuda" not in sys.modules
+    assert callable(gdsdiff.discover_native_capabilities)
 
 
 def test_native_capability_discovery_is_cpu_safe(monkeypatch):
@@ -37,7 +37,7 @@ def test_pyproject_defines_cpu_safe_console_entry_point():
     pyproject = tomllib.loads((_repo_root() / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["build-system"]["build-backend"] == "setuptools.build_meta"
-    assert pyproject["project"]["scripts"]["gds-gpu-compare"] == "gds_tools_tk.gpu_compare.cli:main"
+    assert pyproject["project"]["scripts"]["gdsdiff"] == "gds_tools_tk.gdsdiff.cli:main"
     assert "gdstk" in pyproject["project"]["dependencies"]
     assert "numpy" in pyproject["project"]["dependencies"]
 
@@ -45,7 +45,7 @@ def test_pyproject_defines_cpu_safe_console_entry_point():
 def test_cmake_options_keep_cuda_and_python_extension_optional():
     assert not (_repo_root() / "CMakeLists.txt").exists()
     native_cmake = (
-        _repo_root() / "gds_tools_tk" / "gpu_compare" / "native_src" / "gds_gpu_compare" / "CMakeLists.txt"
+        _repo_root() / "gds_tools_tk" / "gdsdiff" / "native_src" / "gdsdiff" / "CMakeLists.txt"
     ).read_text(encoding="utf-8")
 
     assert "add_library(gds_compare_core STATIC core.cpp)" in native_cmake

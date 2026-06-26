@@ -6,13 +6,13 @@ from pathlib import Path
 import gdstk
 import pytest
 
-from gds_tools_tk.gpu_compare.backends.polygon_extract_ctypes import (
+from gds_tools_tk.gdsdiff.backends.polygon_extract_ctypes import (
     PolygonExtractCtypesUnavailable,
     extract_gds_polygons_native,
 )
-from gds_tools_tk.gpu_compare.config import LayerSpec
-from gds_tools_tk.gpu_compare.extract import extract_gds_polygons
-from gds_tools_tk.gpu_compare.geometry import FLAG_FEWER_THAN_THREE_POINTS, FLAG_ZERO_AREA
+from gds_tools_tk.gdsdiff.config import LayerSpec
+from gds_tools_tk.gdsdiff.extract import extract_gds_polygons
+from gds_tools_tk.gdsdiff.geometry import FLAG_FEWER_THAN_THREE_POINTS, FLAG_ZERO_AREA
 
 
 def _polygon_records(extraction):

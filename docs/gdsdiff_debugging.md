@@ -30,20 +30,20 @@ Common causes:
 - Run focused comparator tests:
 
 ```bash
-.venv/bin/python -m pytest -c gds_tools_tk/tests/pytest.ini gds_tools_tk/tests/gpu_compare
+.venv/bin/python -m pytest -c gds_tools_tk/tests/pytest.ini gds_tools_tk/tests/gdsdiff
 ```
 
 - Run a direct CLI smoke check:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.gpu_compare references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_before.gds --top chip --tile-size 256 --json-report /tmp/chip2_compare.json --diff-gds /tmp/chip2_diff.gds
+.venv/bin/python -m gds_tools_tk.gdsdiff references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_before.gds --top chip --tile-size 256 --json-report /tmp/chip2_compare.json --diff-gds /tmp/chip2_diff.gds
 ```
 
 - Run workflow wrapper smoke checks for geometry-affecting project changes.
 - Run benchmark smoke:
 
 ```bash
-.venv/bin/python benchmarks/gpu_compare/run_benchmarks.py --max-pairs 1 --mode windowed --tile-size 256 --output /tmp/gds_gpu_compare_benchmark_smoke.json
+.venv/bin/python benchmarks/gdsdiff/run_benchmarks.py --max-pairs 1 --mode windowed --tile-size 256 --output /tmp/gdsdiff_benchmark_smoke.json
 ```
 
 - Confirm generated cache/artifact files are not accidentally committed.

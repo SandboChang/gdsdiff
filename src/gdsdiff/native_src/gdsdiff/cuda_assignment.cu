@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace gds_gpu_compare {
+namespace gdsdiff {
 namespace {
 
 struct DevicePolygon {
@@ -301,4 +301,4 @@ CudaAssignmentResult run_cuda_assignment(
     return result;
 }
 
-}  // namespace gds_gpu_compare
+}  // namespace gdsdiff

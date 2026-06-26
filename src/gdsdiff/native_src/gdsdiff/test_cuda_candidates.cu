@@ -4,7 +4,7 @@
 #include <cassert>
 #include <iostream>
 
-using namespace gds_gpu_compare;
+using namespace gdsdiff;
 
 namespace {
 

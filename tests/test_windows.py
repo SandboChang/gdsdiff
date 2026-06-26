@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gds_tools_tk.gpu_compare import (
+from gds_tools_tk.gdsdiff import (
     CpuTilePrefilterResult,
     LayerSpec,
     OversizedPolygon,
@@ -12,7 +12,7 @@ from gds_tools_tk.gpu_compare import (
     WindowConfig,
     build_candidate_windows,
 )
-from gds_tools_tk.gpu_compare.geometry import LayerTable, PolygonBuffer
+from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

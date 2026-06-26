@@ -1,6 +1,6 @@
 # GDS GPU Comparator Report
 
-Reports use schema `gds-gpu-compare-report-v1`.
+Reports use schema `gdsdiff-report-v1`.
 
 Important top-level fields:
 

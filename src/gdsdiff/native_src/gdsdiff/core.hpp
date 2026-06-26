@@ -8,7 +8,7 @@
 #include <tuple>
 #include <vector>
 
-namespace gds_gpu_compare {
+namespace gdsdiff {
 
 constexpr std::uint32_t kEncodingVersion = 1;
 constexpr std::uint32_t kValidityValid = 0;
@@ -93,4 +93,4 @@ TilePrefilterResult run_tile_prefilter(
     const std::vector<std::uint64_t>& new_canonical_ids,
     const TileConfig& config);
 
-}  // namespace gds_gpu_compare
+}  // namespace gdsdiff

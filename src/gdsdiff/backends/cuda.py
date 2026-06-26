@@ -14,7 +14,7 @@ class CudaBackendUnavailable(RuntimeError):
 class CudaTileBackend:
     def __init__(self) -> None:
         try:
-            self._extension = importlib.import_module("gds_tools_tk.gpu_compare._gds_compare_cuda")
+            self._extension = importlib.import_module("gds_tools_tk.gdsdiff._gds_compare_cuda")
         except ImportError as exc:
             raise CudaBackendUnavailable("CUDA backend extension is not available") from exc
 

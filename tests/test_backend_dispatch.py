@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import gdstk
 
-from gds_tools_tk.gpu_compare import Backend, CompareConfig, CompareStatus, compare_gds_files
+from gds_tools_tk.gdsdiff import Backend, CompareConfig, CompareStatus, compare_gds_files
 
 
 def _write_pair(tmp_path, *, shifted=True):

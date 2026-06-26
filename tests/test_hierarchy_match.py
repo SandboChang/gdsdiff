@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import gdstk
 
-from gds_tools_tk.gpu_compare import canonical_cell_identity, compare_hierarchy
+from gds_tools_tk.gdsdiff import canonical_cell_identity, compare_hierarchy
 
 
 def _rect(x0, y0, x1, y1, *, layer=1, datatype=0):

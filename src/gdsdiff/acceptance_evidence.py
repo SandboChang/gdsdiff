@@ -17,7 +17,7 @@ from .cache import load_or_build_cached_geometry
 from .config import CompareConfig
 from .native import discover_native_capabilities
 
-SCHEMA_VERSION = "gds-gpu-compare-acceptance-evidence-v1"
+SCHEMA_VERSION = "gdsdiff-acceptance-evidence-v1"
 TOP_NAME_OVERRIDES = {
     "medium": "medium_compare_top",
     "equal_count": "equal_count_top",

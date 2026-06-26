@@ -5,7 +5,7 @@
 #include <limits>
 #include <utility>
 
-namespace gds_gpu_compare {
+namespace gdsdiff {
 namespace {
 
 void append_u32_be(std::string& out, std::uint32_t value) {
@@ -188,4 +188,4 @@ TilePrefilterResult run_tile_prefilter(
     return result;
 }
 
-}  // namespace gds_gpu_compare
+}  // namespace gdsdiff

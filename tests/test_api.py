@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 import gdstk
-import gds_tools_tk.gpu_compare.api as api_module
+import gds_tools_tk.gdsdiff.api as api_module
 import pytest
 
-from gds_tools_tk.gpu_compare import (
+from gds_tools_tk.gdsdiff import (
     AllowedRegion,
     CompareConfig,
     CompareStatus,
@@ -15,9 +15,9 @@ from gds_tools_tk.gpu_compare import (
     FailurePolicy,
     compare_gds_files,
 )
-from gds_tools_tk.gpu_compare.backends.cuda_ctypes import cuda_ctypes_available
-from gds_tools_tk.gpu_compare.config import LayerSpec
-from gds_tools_tk.gpu_compare.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
+from gds_tools_tk.gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
+from gds_tools_tk.gdsdiff.config import LayerSpec
+from gds_tools_tk.gdsdiff.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
 
 
 def _write_pair(tmp_path, *, shifted=True):

@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import gdstk
 
-from gds_tools_tk.gpu_compare import LayerSpec, extract_gds_polygons
-from gds_tools_tk.gpu_compare.geometry import FLAG_FEWER_THAN_THREE_POINTS, FLAG_ZERO_AREA
+from gds_tools_tk.gdsdiff import LayerSpec, extract_gds_polygons
+from gds_tools_tk.gdsdiff.geometry import FLAG_FEWER_THAN_THREE_POINTS, FLAG_ZERO_AREA
 
 
 def test_extract_simple_rectangle_to_integer_buffer(tmp_path):
