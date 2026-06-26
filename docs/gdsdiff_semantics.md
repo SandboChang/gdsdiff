@@ -1,4 +1,4 @@
-# GDS GPU Comparator Semantics
+# gdsdiff Semantics
 
 ## Authority
 

@@ -1,4 +1,4 @@
-# GDS GPU Comparator Debugging And Release Checklist
+# gdsdiff Debugging And Release Checklist
 
 ## Debugging
 
@@ -36,7 +36,7 @@ Common causes:
 - Run a direct CLI smoke check:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.gdsdiff references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_before.gds --top chip --tile-size 256 --json-report /tmp/chip2_compare.json --diff-gds /tmp/chip2_diff.gds
+.venv/bin/python -m gds_tools_tk.gdsdiff references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_before.gds --top chip --output-dir /tmp/chip2_compare
 ```
 
 - Run workflow wrapper smoke checks for geometry-affecting project changes.

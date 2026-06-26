@@ -1,25 +1,30 @@
-# GDS GPU Comparator
+# gdsdiff Engine
 
-The Plan 1 comparator checks whether two GDS files are geometrically equivalent
-or whether their differences are confined to explicitly allowed regions.
+`gdsdiff` compares two GDS files and emits neutral factual evidence about exact
+geometry differences. It does not decide whether a difference is intended.
 
-The production correctness oracle is `gdstk.boolean`. CPU/CUDA broad-phase
-code is used to find candidate windows and reduce work; it is not treated as
-the final proof of geometry equality.
+The default command uses `--backend auto`: a supported GPU evidence path when
+available, with CPU `gdstk` exact fallback when no suitable GPU backend is
+available.
 
 ## Basic CLI
 
 Run the package CLI from the repository root:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.gdsdiff references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_after.gds --top chip --tile-size 256 --json-report outputs/chip2_compare.json --diff-gds outputs/chip2_diff.gds
+.venv/bin/python -m gds_tools_tk.gdsdiff references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_after.gds --top chip --output-dir results/0001_chip2_diff
 ```
+
+`--output-dir` writes the standard artifact set: `report.json`,
+`exact_diff.md`, and `diff_vertices.jsonl`. For agent validation, treat
+`exact_diff.md` and its sidecar as temporary review artifacts unless the user
+explicitly asks to retain them.
 
 Exit codes:
 
-- `0`: equivalent, or only expected differences under the selected policy.
-- `1`: unexpected geometry differences, or any difference when
-  `--failure-policy fail-on-any-diff` is selected.
+- `0`: identical/equivalent, or only allowed differences under the selected
+  policy.
+- `1`: differences found under the active failure policy.
 - `2`: invalid input, unresolved comparison, backend error, or artifact error.
 
 Useful options:
@@ -28,9 +33,8 @@ Useful options:
 - `--old-top OLD --new-top NEW`: compare different top cell names.
 - `--layers all` or `--layers 1:0,2:0`: select layer/datatype pairs.
 - `--tile-size N`: tune broad-phase tile granularity.
-- `--backend cpu|auto|cuda`: select broad-phase backend. The current Python
-  dispatch is CPU/fallback; CUDA kernels are qualified at the native test
-  level but not used as the exact oracle.
+- `--backend auto|cpu|cuda|metal`: select backend. `auto` prefers a supported
+  GPU path and falls back to CPU exact evidence.
 - `--evidence-engine auto|gdstk-oracle|gpu-polygon`: select the evidence
   generator. `gpu-polygon` uses the native parsed polygon-array path. It can
   currently produce exact CUDA coverage evidence for rectangle-only inputs,
@@ -48,12 +52,13 @@ Useful options:
 - `--json-report PATH`: write machine-readable report JSON.
 - `--diff-gds PATH`: write a GDS showing classified diff fragments.
 - `--markdown PATH`: write a design-history style Markdown summary.
+- `--exact-diff-markdown PATH`: write the compact factual exact-diff Markdown.
 
-Allowed directions are `addition`, `removal`, `both`, and `xor`.
+Allowed policy directions are `addition`, `removal`, `both`, and `xor`.
 
 ## Workflow Wrapper
 
-For agent/CI validation around generated project outputs, use:
+For agent/CI validation around generated project outputs, a wrapper exists:
 
 ```bash
 .venv/bin/python tools/run_gds_geometry_check.py path/to/output.gds --artifacts-dir outputs/gds_check --rebuild-command ".venv/bin/python path/to/stage.py" --top TOP
@@ -69,8 +74,9 @@ The wrapper:
 6. Optionally appends a design-history entry.
 7. Moves the temporary baseline into `.dump/gds_geometry_check_<label>/`.
 
-Use this wrapper for geometry-affecting recipe work because it preserves the
-backup/readback policy and produces one machine-readable verdict.
+For work that needs the current compact output diff Markdown, call `gdsdiff`
+with `--output-dir` or `--exact-diff-markdown` so the generated Markdown comes
+from the standard exact-diff reporter.
 
 ## Benchmarking
 

@@ -1,12 +1,14 @@
-# GDS GPU Comparator Report
+# gdsdiff Report
 
 Reports use schema `gdsdiff-report-v1`.
 
 Important top-level fields:
 
-- `status`: one of `equivalent`, `expected-differences-only`,
-  `unexpected-differences`, `unresolved`, `invalid-input`, `backend-error`, or
-  `artifact-error`.
+- `status`: comparator/policy status. Default neutral `gdsdiff` statuses are
+  `identical`, `differences-found`, `unsupported-input`,
+  `incomplete-evidence`, and `internal-mismatch`; policy-aware flows can also
+  report `equivalent`, `expected-differences-only`, `unexpected-differences`,
+  `unresolved`, `invalid-input`, `backend-error`, or `artifact-error`.
 - `exit_code_category`: the expected process exit code category, `0`, `1`, or
   `2`.
 - `exact_verification_complete`: true only when exact verification reached a
