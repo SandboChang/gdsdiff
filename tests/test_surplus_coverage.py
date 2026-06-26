@@ -5,12 +5,12 @@ from pathlib import Path
 import gdstk
 import pytest
 
-from gds_tools_tk.gdsdiff.backends.cuda_ctypes import cuda_ctypes_available, run_cuda_polygon_record_delta
-from gds_tools_tk.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
-from gds_tools_tk.gdsdiff.config import LayerSpec
-from gds_tools_tk.gdsdiff.exact_oracle import run_full_exact_oracle
-from gds_tools_tk.gdsdiff.extract import extract_gds_polygons
-from gds_tools_tk.gdsdiff.surplus_coverage import (
+from scgds.gdsdiff.backends.cuda_ctypes import cuda_ctypes_available, run_cuda_polygon_record_delta
+from scgds.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
+from scgds.gdsdiff.config import LayerSpec
+from scgds.gdsdiff.exact_oracle import run_full_exact_oracle
+from scgds.gdsdiff.extract import extract_gds_polygons
+from scgds.gdsdiff.surplus_coverage import (
     run_canonical_surplus_coverage_probe,
     run_record_delta_surplus_coverage_probe,
 )

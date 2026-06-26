@@ -5,12 +5,12 @@ from pathlib import Path
 import gdstk
 import pytest
 
-from gds_tools_tk.gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
-from gds_tools_tk.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
-from gds_tools_tk.gdsdiff.config import LayerSpec
-from gds_tools_tk.gdsdiff.exact_oracle import run_full_exact_oracle
-from gds_tools_tk.gdsdiff.extract import extract_gds_polygons
-from gds_tools_tk.gdsdiff.rect_coverage import RectCoverageUnsupported, run_cuda_rectangle_coverage_diff
+from scgds.gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
+from scgds.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
+from scgds.gdsdiff.config import LayerSpec
+from scgds.gdsdiff.exact_oracle import run_full_exact_oracle
+from scgds.gdsdiff.extract import extract_gds_polygons
+from scgds.gdsdiff.rect_coverage import RectCoverageUnsupported, run_cuda_rectangle_coverage_diff
 
 
 def test_cuda_rectangle_coverage_diff_emits_directional_fragments(tmp_path):

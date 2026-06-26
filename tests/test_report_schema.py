@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from gds_tools_tk.gdsdiff import (
+from scgds.gdsdiff import (
     CompareReport,
     CompareStatus,
     ComponentSummary,

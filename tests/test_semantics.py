@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from gds_tools_tk.gdsdiff import Backend, CompareStatus, FailurePolicy, PathPolicy, exit_code_for_status
+from scgds.gdsdiff import Backend, CompareStatus, FailurePolicy, PathPolicy, exit_code_for_status
 
 
 def test_string_enums_coerce_valid_values():

@@ -7,7 +7,7 @@ import gdstk
 import numpy as np
 import pytest
 
-from gds_tools_tk.gdsdiff import (
+from scgds.gdsdiff import (
     AllowedRegion,
     CompareReport,
     CompareStatus,
@@ -25,8 +25,8 @@ from gds_tools_tk.gdsdiff import (
     write_diff_gds,
     write_exact_diff_markdown,
 )
-from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer, polygon_bbox, polygon_twice_area
-from gds_tools_tk.gdsdiff.report import build_layer_reports
+from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer, polygon_bbox, polygon_twice_area
+from scgds.gdsdiff.report import build_layer_reports
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):
@@ -339,7 +339,7 @@ def test_json_write_failure_does_not_replace_existing_target(tmp_path, monkeypat
     def fail_replace(source, destination):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("gds_tools_tk.gdsdiff.report.os.replace", fail_replace)
+    monkeypatch.setattr("scgds.gdsdiff.report.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated"):
         report.write_json(target)

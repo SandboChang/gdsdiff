@@ -12,7 +12,7 @@ available.
 Run the package CLI from the repository root:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.gdsdiff before.gds after.gds --top TOP --output-dir /tmp/gdsdiff_chip2
+.venv/bin/python -m scgds.gdsdiff before.gds after.gds --top TOP --output-dir /tmp/gdsdiff_chip2
 ```
 
 `--output-dir` writes the standard artifact set: `report.json`,
@@ -61,7 +61,7 @@ Allowed policy directions are `addition`, `removal`, `both`, and `xor`.
 For agent/CI validation around generated project outputs, a wrapper exists:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.tools.run_gds_geometry_check path/to/output.gds --artifacts-dir outputs/gds_check --rebuild-command ".venv/bin/python path/to/stage.py" --top TOP
+.venv/bin/python -m scgds.tools.run_gds_geometry_check path/to/output.gds --artifacts-dir outputs/gds_check --rebuild-command ".venv/bin/python path/to/stage.py" --top TOP
 ```
 
 The wrapper:

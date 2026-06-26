@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import gdstk
 
-from gds_tools_tk.gdsdiff.backends.geometry_ctypes import compare_gds_geometry_native, summarize_gds_geometry_native
-from gds_tools_tk.gdsdiff.config import LayerSpec
-from gds_tools_tk.gdsdiff.extract import extract_gds_polygons
+from scgds.gdsdiff.backends.geometry_ctypes import compare_gds_geometry_native, summarize_gds_geometry_native
+from scgds.gdsdiff.config import LayerSpec
+from scgds.gdsdiff.extract import extract_gds_polygons
 
 
 def _gdstk_layer_summary(path, *, top_name=None):

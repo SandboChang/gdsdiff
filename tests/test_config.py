@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from gds_tools_tk.gdsdiff import (
+from scgds.gdsdiff import (
     AllowedRegion,
     Backend,
     CompareConfig,

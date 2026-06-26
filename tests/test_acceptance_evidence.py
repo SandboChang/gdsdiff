@@ -5,7 +5,7 @@ import os
 
 import gdstk
 
-from gds_tools_tk.gdsdiff.acceptance_evidence import (
+from scgds.gdsdiff.acceptance_evidence import (
     AcceptanceCorpusPair,
     SCHEMA_VERSION,
     _busy_percent,

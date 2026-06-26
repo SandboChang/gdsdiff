@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from ..exact_oracle import DiffFragment
+from ..native_cache import cached_native_library_path
 
 
 class BoundaryLoopCtypesUnavailable(RuntimeError):
@@ -168,7 +169,7 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "_gds_boundary_loops.so"
+    return cached_native_library_path("_gds_boundary_loops.so")
 
 
 def _source_path() -> Path:

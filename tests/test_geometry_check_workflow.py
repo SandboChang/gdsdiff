@@ -6,7 +6,7 @@ from pathlib import Path
 
 import gdstk
 
-from gds_tools_tk.tools import run_gds_geometry_check as workflow
+from scgds.tools import run_gds_geometry_check as workflow
 
 
 def _write_gds(path: Path, *, changed: bool = False, invalid: bool = False) -> None:

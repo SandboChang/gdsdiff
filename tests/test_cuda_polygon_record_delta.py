@@ -3,11 +3,11 @@ from __future__ import annotations
 import gdstk
 import pytest
 
-from gds_tools_tk.gdsdiff.backends.cuda_ctypes import (
+from scgds.gdsdiff.backends.cuda_ctypes import (
     cuda_ctypes_available,
     run_cuda_polygon_record_delta,
 )
-from gds_tools_tk.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
+from scgds.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
 
 
 def test_cuda_polygon_record_delta_cancels_identical_records_and_reports_directional_deltas(tmp_path):

@@ -5,6 +5,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..native_cache import cached_native_library_path
+
 
 class StructuralCtypesUnavailable(RuntimeError):
     pass
@@ -116,7 +118,7 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "_gds_structural_scan.so"
+    return cached_native_library_path("_gds_structural_scan.so")
 
 
 def _source_path() -> Path:

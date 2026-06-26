@@ -9,6 +9,7 @@ import numpy as np
 
 from ..config import LayerSpec, parse_layer_selector
 from ..geometry import LayerTable, PolygonBuffer
+from ..native_cache import cached_native_library_path
 
 
 class PolygonExtractCtypesUnavailable(RuntimeError):
@@ -215,7 +216,7 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "_gds_polygon_extract.so"
+    return cached_native_library_path("_gds_polygon_extract.so")
 
 
 def _source_path() -> Path:

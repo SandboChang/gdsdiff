@@ -6,8 +6,8 @@ from pathlib import Path
 import gdstk
 import pytest
 
-from gds_tools_tk.gdsdiff import GdsMetadata, read_gds_metadata, resolve_comparison_grid, snap_to_grid
-from gds_tools_tk.gdsdiff.grid import validate_int64_coordinate
+from scgds.gdsdiff import GdsMetadata, read_gds_metadata, resolve_comparison_grid, snap_to_grid
+from scgds.gdsdiff.grid import validate_int64_coordinate
 
 
 def _metadata(precision: str, unit: str = "1e-6") -> GdsMetadata:

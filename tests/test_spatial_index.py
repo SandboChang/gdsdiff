@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from gds_tools_tk.gdsdiff import LayerSpec, SpatialIndex, bboxes_intersect
-from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer
+from scgds.gdsdiff import LayerSpec, SpatialIndex, bboxes_intersect
+from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer():

@@ -4,8 +4,9 @@ import sys
 import tomllib
 from pathlib import Path
 
-from gds_tools_tk import gdsdiff
-from gds_tools_tk.gdsdiff.native import CUDA_ARCH_ENV, discover_native_capabilities
+from scgds import gdsdiff
+from scgds.gdsdiff.native_cache import cached_native_library_path
+from scgds.gdsdiff.native import CUDA_ARCH_ENV, discover_native_capabilities
 
 
 def _repo_root() -> Path:
@@ -13,8 +14,8 @@ def _repo_root() -> Path:
 
 
 def test_package_import_does_not_import_optional_native_or_cuda_extensions():
-    assert "gds_tools_tk.gdsdiff._gds_compare_core" not in sys.modules
-    assert "gds_tools_tk.gdsdiff._gds_compare_cuda" not in sys.modules
+    assert "scgds.gdsdiff._gds_compare_core" not in sys.modules
+    assert "scgds.gdsdiff._gds_compare_cuda" not in sys.modules
     assert callable(gdsdiff.discover_native_capabilities)
 
 
@@ -35,17 +36,35 @@ def test_native_capability_discovery_is_cpu_safe(monkeypatch):
 
 def test_pyproject_defines_cpu_safe_console_entry_point():
     pyproject = tomllib.loads((_repo_root() / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = pyproject["project"]["dependencies"]
+    optional_dependencies = pyproject["project"]["optional-dependencies"]
 
     assert pyproject["build-system"]["build-backend"] == "setuptools.build_meta"
-    assert pyproject["project"]["scripts"]["gdsdiff"] == "gds_tools_tk.gdsdiff.cli:main"
-    assert "gdstk" in pyproject["project"]["dependencies"]
-    assert "numpy" in pyproject["project"]["dependencies"]
+    assert pyproject["project"]["name"] == "scgds"
+    assert pyproject["project"]["readme"] == "README.md"
+    assert pyproject["project"]["scripts"]["gdsdiff"] == "scgds.gdsdiff.cli:main"
+    assert "gdstk>=1.0.0" in dependencies
+    assert "numpy>=1.26" in dependencies
+    assert optional_dependencies["test"] == ["pytest"]
+    assert optional_dependencies["native-dev"] == ["cmake", "pybind11"]
+    assert pyproject["tool"]["setuptools"]["packages"]["find"]["include"] == ["scgds*"]
+    assert "scgds.tests*" in pyproject["tool"]["setuptools"]["packages"]["find"]["exclude"]
+    assert "native_src/gdsdiff/*" in pyproject["tool"]["setuptools"]["package-data"]["scgds.gdsdiff"]
+
+
+def test_native_cache_path_uses_external_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCGDS_NATIVE_CACHE_DIR", str(tmp_path))
+
+    path = cached_native_library_path("_probe.so")
+
+    assert path.parent.parent == tmp_path
+    assert path.name == "_probe.so"
 
 
 def test_cmake_options_keep_cuda_and_python_extension_optional():
     assert not (_repo_root() / "CMakeLists.txt").exists()
     native_cmake = (
-        _repo_root() / "gds_tools_tk" / "gdsdiff" / "native_src" / "gdsdiff" / "CMakeLists.txt"
+        _repo_root() / "scgds" / "gdsdiff" / "native_src" / "gdsdiff" / "CMakeLists.txt"
     ).read_text(encoding="utf-8")
 
     assert "add_library(gds_compare_core STATIC core.cpp)" in native_cmake

@@ -10,6 +10,7 @@ import numpy as np
 from ..config import LayerSpec
 from ..exact_oracle import DiffFragment
 from ..geometry import PolygonBuffer
+from ..native_cache import cached_native_library_path
 from ..polygon_components import PolygonComponent
 from ..tiling import CpuTilePrefilterResult, OversizedPolygon, TileConfig, TileKey
 
@@ -1242,7 +1243,7 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "_gds_compare_cuda_ctypes.so"
+    return cached_native_library_path("_gds_compare_cuda_ctypes.so")
 
 
 def _source_path() -> Path:

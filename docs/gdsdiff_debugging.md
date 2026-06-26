@@ -30,13 +30,13 @@ Common causes:
 - Run focused comparator tests:
 
 ```bash
-.venv/bin/python -m pytest -c gds_tools_tk/tests/pytest.ini gds_tools_tk/tests/gdsdiff
+.venv/bin/python -m pytest -c scgds/tests/pytest.ini scgds/tests/gdsdiff
 ```
 
 - Run a direct CLI smoke check:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.gdsdiff before.gds before.gds --top TOP --output-dir /tmp/chip2_compare
+.venv/bin/python -m scgds.gdsdiff before.gds before.gds --top TOP --output-dir /tmp/chip2_compare
 ```
 
 - Run workflow wrapper smoke checks for geometry-affecting project changes.

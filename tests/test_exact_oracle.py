@@ -5,23 +5,23 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gds_tools_tk.gdsdiff import LayerSpec, format_twice_area, run_full_exact_oracle
-from gds_tools_tk.gdsdiff.backends.exact import (
+from scgds.gdsdiff import LayerSpec, format_twice_area, run_full_exact_oracle
+from scgds.gdsdiff.backends.exact import (
     CudaManhattanRectExactComponentBackend,
     GdstkExactComponentBackend,
     ManhattanRectExactComponentBackend,
     UnsupportedExactComponent,
 )
-from gds_tools_tk.gdsdiff.backends.cuda_ctypes import (
+from scgds.gdsdiff.backends.cuda_ctypes import (
     cuda_ctypes_available,
     run_cuda_rect_exact_areas,
     run_cuda_rect_exact_fragments,
     run_cuda_rect_set_exact_fragments,
 )
-from gds_tools_tk.gdsdiff.backends.metal import MetalExactUnavailable, MetalManhattanRectExactComponentBackend
-from gds_tools_tk.gdsdiff.exact_oracle import ExactLayerTask, _component_task_specs, _sparse_rectangle_residual_task_specs
-from gds_tools_tk.gdsdiff.extract import extract_gds_polygons
-from gds_tools_tk.gdsdiff.geometry import LayerTable, PolygonBuffer
+from scgds.gdsdiff.backends.metal import MetalExactUnavailable, MetalManhattanRectExactComponentBackend
+from scgds.gdsdiff.exact_oracle import ExactLayerTask, _component_task_specs, _sparse_rectangle_residual_task_specs
+from scgds.gdsdiff.extract import extract_gds_polygons
+from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

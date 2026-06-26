@@ -6,7 +6,7 @@ import sys
 
 import gdstk
 
-from gds_tools_tk.tools.compare_gds import summarize
+from scgds.tools.compare_gds import summarize
 
 
 def _write_pair(tmp_path, *, shifted=True):
@@ -38,7 +38,7 @@ def test_compare_gds_default_stats_stdout_unchanged_shape(tmp_path):
     old_path, new_path = _write_pair(tmp_path, shifted=False)
 
     completed = subprocess.run(
-        [sys.executable, "-m", "gds_tools_tk.tools.compare_gds", str(old_path), str(new_path)],
+        [sys.executable, "-m", "scgds.tools.compare_gds", str(old_path), str(new_path)],
         check=False,
         text=True,
         capture_output=True,
@@ -57,7 +57,7 @@ def test_compare_gds_exact_mode_returns_unexpected_exit(tmp_path):
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.tools.compare_gds",
+            "scgds.tools.compare_gds",
             "--mode",
             "exact",
             str(old_path),
@@ -82,7 +82,7 @@ def test_compare_gds_accelerated_mode_writes_report_artifacts(tmp_path):
         [
             sys.executable,
             "-m",
-            "gds_tools_tk.tools.compare_gds",
+            "scgds.tools.compare_gds",
             "--mode",
             "accelerated",
             "--tile-size",

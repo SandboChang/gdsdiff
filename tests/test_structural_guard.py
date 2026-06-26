@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import gdstk
 
-from gds_tools_tk.gdsdiff.backends.structural_ctypes import summarize_gds_structure_native
-from gds_tools_tk.gdsdiff.structural_guard import summarize_gds_structure
+from scgds.gdsdiff.backends.structural_ctypes import summarize_gds_structure_native
+from scgds.gdsdiff.structural_guard import summarize_gds_structure
 
 
 def test_native_structural_summary_matches_python_and_gdstk(tmp_path):

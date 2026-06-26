@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import gdstk
 
-from gds_tools_tk.gdsdiff import Backend, CompareConfig, CompareStatus, compare_gds_files
+from scgds.gdsdiff import Backend, CompareConfig, CompareStatus, compare_gds_files
 
 
 def _write_pair(tmp_path, *, shifted=True):

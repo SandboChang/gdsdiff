@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import LayerSpec
+from ..native_cache import cached_native_library_path
 
 
 class GeometryCtypesUnavailable(RuntimeError):
@@ -239,7 +240,7 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "_gds_geometry_scan.so"
+    return cached_native_library_path("_gds_geometry_scan.so")
 
 
 def _source_path() -> Path:

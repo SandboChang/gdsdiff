@@ -45,8 +45,8 @@ class NativeCapabilities:
 def discover_native_capabilities() -> NativeCapabilities:
     return NativeCapabilities(
         tool_version=TOOL_VERSION,
-        core_extension_available=_module_available("gds_tools_tk.gdsdiff._gds_compare_core"),
-        cuda_extension_available=_module_available("gds_tools_tk.gdsdiff._gds_compare_cuda"),
+        core_extension_available=_module_available("scgds.gdsdiff._gds_compare_core"),
+        cuda_extension_available=_module_available("scgds.gdsdiff._gds_compare_cuda"),
         cuda_ctypes_available=_cuda_ctypes_available(),
         cmake_available=shutil.which("cmake") is not None,
         nvcc_available=shutil.which("nvcc") is not None,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import gdstk
 import pytest
 
-from gds_tools_tk.gdsdiff import LayerSpec, inventory_gds, resolve_selected_layers
+from scgds.gdsdiff import LayerSpec, inventory_gds, resolve_selected_layers
 
 
 def _write_simple(path, *, cell_name="top", layer=(1, 0)):
