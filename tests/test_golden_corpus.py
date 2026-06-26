@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from gds_tools_tk.gdsdiff import LayerSpec, extract_gds_polygons, format_twice_area, run_full_exact_oracle
@@ -28,6 +30,9 @@ def test_generated_fixture_corpus_matches_oracle_expectations(tmp_path, case):
 def test_chip2_repository_fixture_runs_through_extraction_and_oracle():
     old_path = "references/testGDS/chip/chip2_before.gds"
     new_path = "references/testGDS/chip/chip2_after.gds"
+    if not Path(old_path).exists() or not Path(new_path).exists():
+        pytest.skip("local reference GDS fixtures are not present")
+
     old = extract_gds_polygons(old_path, meters_per_dbu="1e-9").buffer
     new = extract_gds_polygons(new_path, meters_per_dbu="1e-9").buffer
 

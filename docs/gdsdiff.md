@@ -7,7 +7,7 @@ whether those differences are intended.
 ## Basic Use
 
 ```bash
-gdsdiff before.gds after.gds --output-dir results/0001_my_check
+gdsdiff before.gds after.gds --output-dir /tmp/gdsdiff_my_check
 ```
 
 The command writes the standard artifact set:

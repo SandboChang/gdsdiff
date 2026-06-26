@@ -36,7 +36,7 @@ Common causes:
 - Run a direct CLI smoke check:
 
 ```bash
-.venv/bin/python -m gds_tools_tk.gdsdiff references/testGDS/chip/chip2_before.gds references/testGDS/chip/chip2_before.gds --top chip --output-dir /tmp/chip2_compare
+.venv/bin/python -m gds_tools_tk.gdsdiff before.gds before.gds --top TOP --output-dir /tmp/chip2_compare
 ```
 
 - Run workflow wrapper smoke checks for geometry-affecting project changes.
@@ -47,8 +47,7 @@ Common causes:
 ```
 
 - Confirm generated cache/artifact files are not accidentally committed.
-- Confirm no generated `.gds` outputs are added to git unless they are
-  intentional fixtures under `references/testGDS`.
+- Confirm no generated `.gds` outputs are added to git.
 - Confirm optional Gate F work remains disabled unless separately qualified.
 
 ## Known Limitations

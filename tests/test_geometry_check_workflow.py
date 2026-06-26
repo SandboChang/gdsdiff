@@ -1,20 +1,12 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
 
 import gdstk
 
-
-ROOT = Path(__file__).resolve().parents[3]
-WORKFLOW_PATH = ROOT / "tools" / "run_gds_geometry_check.py"
-SPEC = importlib.util.spec_from_file_location("run_gds_geometry_check", WORKFLOW_PATH)
-workflow = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
-sys.modules[SPEC.name] = workflow
-SPEC.loader.exec_module(workflow)
+from gds_tools_tk.tools import run_gds_geometry_check as workflow
 
 
 def _write_gds(path: Path, *, changed: bool = False, invalid: bool = False) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -469,6 +471,9 @@ def test_manhattan_rect_backend_can_fallback_to_gdstk_for_unsupported_component(
 def test_manhattan_rect_backend_matches_equal_count_fixture():
     before = "references/testGDS/equal_count/equal_count_before.gds"
     after = "references/testGDS/equal_count/equal_count_after.gds"
+    if not Path(before).exists() or not Path(after).exists():
+        pytest.skip("local reference GDS fixtures are not present")
+
     old = extract_gds_polygons(before, top_name="equal_count_top").buffer
     new = extract_gds_polygons(after, top_name="equal_count_top").buffer
     backend = ManhattanRectExactComponentBackend()
@@ -522,6 +527,9 @@ def test_cuda_manhattan_rect_backend_matches_equal_count_fixture():
         pytest.skip("CUDA ctypes backend is not available")
     before = "references/testGDS/equal_count/equal_count_before.gds"
     after = "references/testGDS/equal_count/equal_count_after.gds"
+    if not Path(before).exists() or not Path(after).exists():
+        pytest.skip("local reference GDS fixtures are not present")
+
     old = extract_gds_polygons(before, top_name="equal_count_top").buffer
     new = extract_gds_polygons(after, top_name="equal_count_top").buffer
     backend = CudaManhattanRectExactComponentBackend()
