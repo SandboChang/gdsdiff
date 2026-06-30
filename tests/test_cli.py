@@ -110,6 +110,10 @@ def test_gdsdiff_output_dir_writes_neutral_artifact_set_with_cpu_backend(tmp_pat
     assert data["artifacts"]["vertex_sidecar"] == str(sidecar_path)
     markdown = exact_diff_markdown_path.read_text(encoding="utf-8")
     assert "## Agent Minimal Read" in markdown
+    assert "## Agent Review Checklist" in markdown
+    assert "### Largest Directional Components" in markdown
+    assert "before_only_bbox_union_dbu" in markdown
+    assert "after_only_bbox_union_dbu" in markdown
     assert "coverage_before_only" in markdown
     assert sidecar_path.read_text(encoding="utf-8").strip()
 

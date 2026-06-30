@@ -190,8 +190,10 @@ def render_exact_diff_markdown(
             components,
             polygon_inventory_delta=polygon_inventory_delta,
             digest_component_limit=DEFAULT_DIGEST_COMPONENT_LIMIT,
+            exact_verification_complete=exact_verification_complete,
         )
     )
+    lines.extend(_render_agent_review_checklist())
     lines.extend(_render_layer_summary(policy_result))
     lines.extend(
         _render_components(
@@ -231,13 +233,14 @@ def _render_agent_minimal_read(
     *,
     polygon_inventory_delta: PolygonInventoryDelta | None,
     digest_component_limit: int,
+    exact_verification_complete: bool,
 ) -> list[str]:
     coverage_twice_area = policy_result.expected_twice_area + policy_result.unexpected_twice_area
     inventory_changed = polygon_inventory_delta is not None and polygon_inventory_delta.changed_count > 0
     evidence_status = _neutral_evidence_status(
         coverage_twice_area=coverage_twice_area,
         inventory_changed=inventory_changed,
-        exact_verification_complete=True,
+        exact_verification_complete=exact_verification_complete,
     )
     count_by_direction = Counter(_coverage_direction_label(component.direction) for component in components)
     largest = tuple(sorted(components, key=lambda component: (-abs(component.twice_area), _component_sort_key(component)))[:digest_component_limit])
@@ -245,7 +248,7 @@ def _render_agent_minimal_read(
         "## Agent Minimal Read",
         "",
         "- purpose: `default first section for LLM review; read this before expanding detail tables`",
-        "- recommended_minimum_sections: `Comparator Evidence`, `Agent Minimal Read`, `Layer Summary`",
+        "- recommended_minimum_sections: `Comparator Evidence`, `Agent Minimal Read`, `Agent Review Checklist`, `Layer Summary`",
         "- expand_polygon_components_when: `need exact bbox/area/hash/sidecar id for every changed coverage component`",
         "- expand_inventory_delta_when: `coverage_changed is false but inventory_changed is true, or polygon formation changed`",
         f"- evidence_status: `{evidence_status}`",
@@ -256,17 +259,11 @@ def _render_agent_minimal_read(
         f"- inventory_delta_count: `{polygon_inventory_delta.changed_count if polygon_inventory_delta is not None else 'not-recorded'}`",
         f"- coverage_component_count: `{len(components)}`",
     ]
-    if count_by_direction:
-        counts = ", ".join(
-            f"{direction}={count}"
-            for direction, count in sorted(count_by_direction.items())
-        )
-    else:
-        counts = "none"
-    lines.append(f"- coverage_component_counts_by_direction: `{counts}`")
+    lines.append(f"- coverage_component_counts_by_direction: `{_coverage_direction_count_text(count_by_direction)}`")
     lines.append("")
     lines.extend(_render_agent_layer_digest(policy_result))
     lines.extend(_render_agent_largest_component_digest(largest, total_count=len(components)))
+    lines.extend(_render_agent_largest_directional_component_digest(components))
     return lines
 
 
@@ -274,24 +271,32 @@ def _render_agent_layer_digest(policy_result: PolicyClassificationResult) -> lis
     lines = [
         "### Affected Layer Digest",
         "",
-        "| layer | datatype | coverage_xor_area_dbu2 | components | bbox_union_dbu |",
-        "|---:|---:|---:|---:|---|",
+        "| layer | datatype | coverage_xor_area_dbu2 | coverage_before_only_area_dbu2 | coverage_after_only_area_dbu2 | before_only_components | after_only_components | before_only_bbox_union_dbu | after_only_bbox_union_dbu | coverage_xor_bbox_union_dbu | components |",
+        "|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|",
     ]
     for layer in policy_result.layers:
         exact_twice_area = _coverage_twice_area(layer.components)
+        before_components = _coverage_direction_components(layer.components, DifferenceDirection.REMOVAL)
+        after_components = _coverage_direction_components(layer.components, DifferenceDirection.ADDITION)
         bboxes = [component.bbox for component in layer.components]
         bbox_union = _bbox_union(bboxes)
         lines.append(
-            "| {layer} | {datatype} | {area} | {count} | `{bbox}` |".format(
+            "| {layer} | {datatype} | {area} | {before_area} | {after_area} | {before_count} | {after_count} | `{before_bbox}` | `{after_bbox}` | `{bbox}` | {count} |".format(
                 layer=layer.layer.layer,
                 datatype=layer.layer.datatype,
                 area=format_twice_area(exact_twice_area),
+                before_area=format_twice_area(_coverage_twice_area(before_components)),
+                after_area=format_twice_area(_coverage_twice_area(after_components)),
+                before_count=len(before_components),
+                after_count=len(after_components),
+                before_bbox=_bbox_json(_bbox_union(tuple(component.bbox for component in before_components))),
+                after_bbox=_bbox_json(_bbox_union(tuple(component.bbox for component in after_components))),
                 count=len(layer.components),
-                bbox=list(bbox_union) if bbox_union is not None else "none",
+                bbox=_bbox_json(bbox_union),
             )
         )
     if not policy_result.layers:
-        lines.append("| - | - | 0 | 0 | `none` |")
+        lines.append("| - | - | 0 | 0 | 0 | 0 | 0 | `none` | `none` | `none` | 0 |")
     lines.append("")
     return lines
 
@@ -328,6 +333,58 @@ def _render_agent_largest_component_digest(
         )
     lines.append("")
     return lines
+
+
+def _render_agent_largest_directional_component_digest(
+    components: tuple[ClassifiedComponent, ...],
+) -> list[str]:
+    lines = [
+        "### Largest Directional Components",
+        "",
+        "| direction | layer | datatype | bbox_dbu | area_dbu2 | vertex_count | points_sha256 |",
+        "|---|---:|---:|---|---:|---:|---|",
+    ]
+    rows = []
+    for direction in (DifferenceDirection.REMOVAL, DifferenceDirection.ADDITION):
+        direction_components = _coverage_direction_components(components, direction)
+        if direction_components:
+            rows.append(
+                sorted(
+                    direction_components,
+                    key=lambda component: (-abs(component.twice_area), _component_sort_key(component)),
+                )[0]
+            )
+    for component in rows:
+        lines.append(
+            "| `{direction}` | {layer} | {datatype} | `{bbox}` | `{area}` | {vertex_count} | `{sha}` |".format(
+                direction=_coverage_direction_label(component.direction),
+                layer=component.layer.layer,
+                datatype=component.layer.datatype,
+                bbox=json.dumps(list(component.bbox), separators=(",", ":")),
+                area=component.area_dbu2_string,
+                vertex_count=len(component.points),
+                sha=_points_hash(component),
+            )
+        )
+    if not rows:
+        lines.append("| - | - | - | `none` | 0 | 0 | `none` |")
+    lines.append("")
+    return lines
+
+
+def _render_agent_review_checklist() -> list[str]:
+    return [
+        "## Agent Review Checklist",
+        "",
+        "- intent_contract_required: `record intended feature location or bbox, affected layers, intended direction such as add/remove/grow/shrink/move, and forbidden layers or regions before accepting the diff`",
+        "- locality_check: `compare affected layer and directional bbox evidence against the intended feature region; expand Polygon Components when a bbox is outside that region or too coarse to judge`",
+        "- directionality_check: `coverage_before_only is old-only material and coverage_after_only is new-only material; grow, shrink, and move edits should have directional bboxes and areas consistent with that intent`",
+        "- outside_region_check: `look for changed layers or component bboxes outside the intended feature area; if a precise window is known, optionally rerun with --allow-region as a stricter second pass`",
+        "- forbidden_layer_check: `nonzero coverage on layers outside the intended layer set requires explicit design justification before acceptance`",
+        "- readback_invariant_check: `verify decisive dimensions, counts, overlaps, and containment from GDS coordinates; total layer area and polygon count are triage only`",
+        "- reviewer_classification_required: `classify each nontrivial component as expected, unexpected, or unresolved in the closing report or design history, tied to layer, direction, bbox, and area`",
+        "",
+    ]
 
 
 def write_exact_diff_markdown(
@@ -381,17 +438,23 @@ def _render_layer_summary(policy_result: PolicyClassificationResult) -> list[str
         return lines
     lines.extend(
         [
-            "| layer | datatype | coverage_before_only_area_dbu2 | coverage_after_only_area_dbu2 | components |",
-            "|---:|---:|---:|---:|---:|",
+            "| layer | datatype | coverage_before_only_area_dbu2 | coverage_after_only_area_dbu2 | before_only_components | after_only_components | before_only_bbox_union_dbu | after_only_bbox_union_dbu | components |",
+            "|---:|---:|---:|---:|---:|---:|---|---|---:|",
         ]
     )
     for layer in policy_result.layers:
+        before_components = _coverage_direction_components(layer.components, DifferenceDirection.REMOVAL)
+        after_components = _coverage_direction_components(layer.components, DifferenceDirection.ADDITION)
         lines.append(
-            "| {layer} | {datatype} | {before} | {after} | {count} |".format(
+            "| {layer} | {datatype} | {before} | {after} | {before_count} | {after_count} | `{before_bbox}` | `{after_bbox}` | {count} |".format(
                 layer=layer.layer.layer,
                 datatype=layer.layer.datatype,
-                before=format_twice_area(_coverage_direction_twice_area(layer.components, DifferenceDirection.REMOVAL)),
-                after=format_twice_area(_coverage_direction_twice_area(layer.components, DifferenceDirection.ADDITION)),
+                before=format_twice_area(_coverage_twice_area(before_components)),
+                after=format_twice_area(_coverage_twice_area(after_components)),
+                before_count=len(before_components),
+                after_count=len(after_components),
+                before_bbox=_bbox_json(_bbox_union(tuple(component.bbox for component in before_components))),
+                after_bbox=_bbox_json(_bbox_union(tuple(component.bbox for component in after_components))),
                 count=len(layer.components),
             )
         )
@@ -650,6 +713,31 @@ def _bbox_union(bboxes: list[tuple[int, int, int, int]] | tuple[tuple[int, int, 
         max(bbox[2] for bbox in bboxes),
         max(bbox[3] for bbox in bboxes),
     )
+
+
+def _bbox_json(bbox: tuple[int, int, int, int] | None) -> str:
+    if bbox is None:
+        return "none"
+    return json.dumps(list(bbox), separators=(",", ":"))
+
+
+def _coverage_direction_components(
+    components: tuple[ClassifiedComponent, ...],
+    direction: DifferenceDirection,
+) -> tuple[ClassifiedComponent, ...]:
+    return tuple(component for component in components if component.direction == direction)
+
+
+def _coverage_direction_count_text(counts: Counter[str]) -> str:
+    if not counts:
+        return "none"
+    preferred_order = (
+        _coverage_direction_label(DifferenceDirection.REMOVAL),
+        _coverage_direction_label(DifferenceDirection.ADDITION),
+    )
+    parts = [f"{label}={counts[label]}" for label in preferred_order if counts[label]]
+    parts.extend(f"{label}={counts[label]}" for label in sorted(set(counts) - set(preferred_order)))
+    return ", ".join(parts)
 
 
 def _points_hash(component: ClassifiedComponent) -> str:

@@ -212,6 +212,10 @@ def test_exact_diff_markdown_includes_polygon_vertices(tmp_path):
     assert "- source_mode: `full`" in markdown
     assert "- exact_verification_complete: `true`" in markdown
     assert "- component_count: `2`" in markdown
+    assert "## Agent Review Checklist" in markdown
+    assert "- locality_check: `" in markdown
+    assert "- directionality_check: `" in markdown
+    assert "- reviewer_classification_required: `" in markdown
     assert "## Polygon Components" in markdown
     assert '"classification": "expected"' in markdown
     assert '"classification": "unexpected"' in markdown
@@ -247,6 +251,29 @@ def test_exact_diff_markdown_includes_polygon_vertices(tmp_path):
     assert {record["kind"] for record in sidecar_records} == {"coverage_component", "source_polygon_inventory"}
     assert len(sidecar_records) == 4
     assert all(record["vertices_dbu"] for record in sidecar_records)
+
+
+def test_exact_diff_markdown_includes_directional_review_summaries():
+    _, policy = _classified_shift()
+
+    markdown = render_exact_diff_markdown(
+        policy,
+        title="Directional evidence",
+        source_mode="full",
+        exact_verification_complete=True,
+        generated_at=datetime(2026, 6, 25, tzinfo=timezone.utc),
+    )
+
+    assert "- recommended_minimum_sections: `Comparator Evidence`, `Agent Minimal Read`, `Agent Review Checklist`, `Layer Summary`" in markdown
+    assert "- coverage_component_counts_by_direction: `coverage_before_only=1, coverage_after_only=1`" in markdown
+    assert "### Affected Layer Digest" in markdown
+    assert "| layer | datatype | coverage_xor_area_dbu2 | coverage_before_only_area_dbu2 | coverage_after_only_area_dbu2 | before_only_components | after_only_components | before_only_bbox_union_dbu | after_only_bbox_union_dbu | coverage_xor_bbox_union_dbu | components |" in markdown
+    assert "| 1 | 0 | 40 | 20 | 20 | 1 | 1 | `[0,0,2,10]` | `[10,0,12,10]` | `[0,0,12,10]` | 2 |" in markdown
+    assert "### Largest Directional Components" in markdown
+    assert "| `coverage_before_only` | 1 | 0 | `[0,0,2,10]` | `20` | 4 | `" in markdown
+    assert "| `coverage_after_only` | 1 | 0 | `[10,0,12,10]` | `20` | 4 | `" in markdown
+    assert "## Layer Summary" in markdown
+    assert "| 1 | 0 | 20 | 20 | 1 | 1 | `[0,0,2,10]` | `[10,0,12,10]` | 2 |" in markdown
 
 
 def test_exact_diff_markdown_reports_polygon_split_with_zero_coverage_change():
