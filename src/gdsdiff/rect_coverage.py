@@ -32,11 +32,15 @@ class RectCoverageStats:
     h2d_upload_s: float
     gpu_xor_s: float
     gpu_record_emit_s: float
+    accelerator: str = "cuda"
+    metal_task_count: int = 0
 
     def to_json(self) -> dict[str, object]:
         return {
+            "accelerator": self.accelerator,
             "component_count": self.component_count,
             "cuda_task_count": self.cuda_task_count,
+            "metal_task_count": self.metal_task_count,
             "old_rect_count": self.old_rect_count,
             "new_rect_count": self.new_rect_count,
             "dirty_rect_count": self.dirty_rect_count,
@@ -168,6 +172,118 @@ def run_cuda_rectangle_coverage_diff(
             h2d_upload_s=0.0,
             gpu_xor_s=gpu_s,
             gpu_record_emit_s=emit_s,
+        ),
+    )
+
+
+def run_metal_rectangle_coverage_diff(
+    old_buffer: PolygonBuffer,
+    new_buffer: PolygonBuffer,
+    *,
+    max_rects_per_component: int = 16,
+    max_fragments_per_component: int = 4096,
+) -> RectCoverageResult:
+    old_by_layer = _rectangles_by_layer(old_buffer)
+    new_by_layer = _rectangles_by_layer(new_buffer)
+    layers = tuple(sorted(set(old_by_layer) | set(new_by_layer)))
+    components: list[_RectComponent] = []
+    dirty_rect_count = 0
+    for layer in layers:
+        old_rects = tuple(sorted(set(old_by_layer.get(layer, ()))))
+        new_rects = tuple(sorted(set(new_by_layer.get(layer, ()))))
+        dirty = tuple(sorted((set(old_rects) ^ set(new_rects))))
+        dirty_rect_count += len(dirty)
+        components.extend(_dirty_components(layer, old_rects, new_rects, dirty))
+
+    if not components:
+        return RectCoverageResult(
+            exact_result=ExactOracleResult(tuple(LayerExactDiff(layer=layer) for layer in layers)),
+            stats=RectCoverageStats(
+                component_count=0,
+                cuda_task_count=0,
+                old_rect_count=sum(len(rects) for rects in old_by_layer.values()),
+                new_rect_count=sum(len(rects) for rects in new_by_layer.values()),
+                dirty_rect_count=0,
+                max_old_rects_per_component=0,
+                max_new_rects_per_component=0,
+                transferred_bytes=0,
+                cuda_kernel_count=0,
+                h2d_upload_s=0.0,
+                gpu_xor_s=0.0,
+                gpu_record_emit_s=0.0,
+                accelerator="metal",
+                metal_task_count=0,
+            ),
+        )
+
+    max_old = max(len(component.old_rects) for component in components)
+    max_new = max(len(component.new_rects) for component in components)
+    max_rects = max(max_old, max_new)
+    if max_rects > max_rects_per_component:
+        raise RectCoverageUnsupported(
+            f"rectangle coverage component exceeds Metal rectangle limit: {max_rects} > {max_rects_per_component}"
+        )
+
+    from .backends.metal_ctypes import MetalCtypesUnavailable, run_metal_rect_set_exact_fragments
+
+    old_array = np.zeros((len(components), max_rects, 4), dtype=np.int64)
+    new_array = np.zeros((len(components), max_rects, 4), dtype=np.int64)
+    old_counts = np.zeros((len(components),), dtype=np.uint8)
+    new_counts = np.zeros((len(components),), dtype=np.uint8)
+    for row, component in enumerate(components):
+        old_counts[row] = len(component.old_rects)
+        new_counts[row] = len(component.new_rects)
+        for col, rect in enumerate(component.old_rects):
+            old_array[row, col] = rect
+        for col, rect in enumerate(component.new_rects):
+            new_array[row, col] = rect
+
+    transferred_bytes = int(old_array.nbytes + new_array.nbytes + old_counts.nbytes + new_counts.nbytes)
+    start = perf_counter()
+    try:
+        rects, counts, _areas = run_metal_rect_set_exact_fragments(
+            old_array,
+            new_array,
+            old_counts,
+            new_counts,
+            max_fragments=max_fragments_per_component,
+        )
+    except MetalCtypesUnavailable as exc:
+        raise RectCoverageUnsupported(str(exc)) from exc
+    gpu_s = perf_counter() - start
+
+    diffs_by_layer: dict[LayerSpec, list[LayerExactDiff]] = {layer: [] for layer in layers}
+    emit_start = perf_counter()
+    for row, component in enumerate(components):
+        old_fragments = tuple(_fragment_from_rect(tuple(int(v) for v in rects[row, 0, index])) for index in range(int(counts[row, 0])))
+        new_fragments = tuple(_fragment_from_rect(tuple(int(v) for v in rects[row, 1, index])) for index in range(int(counts[row, 1])))
+        diffs_by_layer[component.layer].append(
+            LayerExactDiff(
+                layer=component.layer,
+                old_minus_new=old_fragments,
+                new_minus_old=new_fragments,
+                xor=old_fragments + new_fragments,
+            )
+        )
+    emit_s = perf_counter() - emit_start
+    layer_diffs = tuple(_merge_layer_diffs(layer, diffs_by_layer[layer]) for layer in layers)
+    return RectCoverageResult(
+        exact_result=ExactOracleResult(layer_diffs),
+        stats=RectCoverageStats(
+            component_count=len(components),
+            cuda_task_count=0,
+            old_rect_count=sum(len(rects) for rects in old_by_layer.values()),
+            new_rect_count=sum(len(rects) for rects in new_by_layer.values()),
+            dirty_rect_count=dirty_rect_count,
+            max_old_rects_per_component=max_old,
+            max_new_rects_per_component=max_new,
+            transferred_bytes=transferred_bytes,
+            cuda_kernel_count=0,
+            h2d_upload_s=0.0,
+            gpu_xor_s=gpu_s,
+            gpu_record_emit_s=emit_s,
+            accelerator="metal",
+            metal_task_count=len(components),
         ),
     )
 

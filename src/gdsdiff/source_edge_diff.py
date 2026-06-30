@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from math import hypot, isfinite
+from typing import Sequence
 
 import numpy as np
 
@@ -29,6 +30,10 @@ class SourceEdgeDiffStats:
     dropped_zero_area_loop_count: int
     gpu_loop_component_count: int = 0
     gpu_loop_edge_count: int = 0
+    cuda_loop_component_count: int = 0
+    cuda_loop_edge_count: int = 0
+    metal_loop_component_count: int = 0
+    metal_loop_edge_count: int = 0
     native_loop_component_count: int = 0
     native_loop_edge_count: int = 0
     gpu_boundary_component_count: int = 0
@@ -46,9 +51,14 @@ class SourceEdgeDiffStats:
     layer_merge_cuda_edge_cancel_transferred_bytes: int = 0
     layer_merge_native_edge_cancel_s: float = 0.0
     layer_merge_cuda_loop_trace_s: float = 0.0
+    layer_merge_metal_loop_trace_s: float = 0.0
+    layer_merge_metal_loop_kernel_count: int = 0
+    layer_merge_metal_loop_event_elapsed_s: float = 0.0
+    layer_merge_metal_loop_transferred_bytes: int = 0
     layer_merge_native_loop_trace_s: float = 0.0
     layer_merge_python_loop_trace_s: float = 0.0
     layer_merge_hole_stitch_s: float = 0.0
+    nested_direction_fragment_component_count: int = 0
 
     def to_json(self) -> dict[str, int | float]:
         return {
@@ -58,6 +68,10 @@ class SourceEdgeDiffStats:
             "dropped_zero_area_loop_count": self.dropped_zero_area_loop_count,
             "gpu_loop_component_count": self.gpu_loop_component_count,
             "gpu_loop_edge_count": self.gpu_loop_edge_count,
+            "cuda_loop_component_count": self.cuda_loop_component_count,
+            "cuda_loop_edge_count": self.cuda_loop_edge_count,
+            "metal_loop_component_count": self.metal_loop_component_count,
+            "metal_loop_edge_count": self.metal_loop_edge_count,
             "native_loop_component_count": self.native_loop_component_count,
             "native_loop_edge_count": self.native_loop_edge_count,
             "gpu_boundary_component_count": self.gpu_boundary_component_count,
@@ -75,9 +89,14 @@ class SourceEdgeDiffStats:
             "layer_merge_cuda_edge_cancel_transferred_bytes": self.layer_merge_cuda_edge_cancel_transferred_bytes,
             "layer_merge_native_edge_cancel_s": self.layer_merge_native_edge_cancel_s,
             "layer_merge_cuda_loop_trace_s": self.layer_merge_cuda_loop_trace_s,
+            "layer_merge_metal_loop_trace_s": self.layer_merge_metal_loop_trace_s,
+            "layer_merge_metal_loop_kernel_count": self.layer_merge_metal_loop_kernel_count,
+            "layer_merge_metal_loop_event_elapsed_s": self.layer_merge_metal_loop_event_elapsed_s,
+            "layer_merge_metal_loop_transferred_bytes": self.layer_merge_metal_loop_transferred_bytes,
             "layer_merge_native_loop_trace_s": self.layer_merge_native_loop_trace_s,
             "layer_merge_python_loop_trace_s": self.layer_merge_python_loop_trace_s,
             "layer_merge_hole_stitch_s": self.layer_merge_hole_stitch_s,
+            "nested_direction_fragment_component_count": self.nested_direction_fragment_component_count,
         }
 
 
@@ -110,6 +129,11 @@ def exact_result_from_source_edges(components: tuple[PolygonComponent, ...]) -> 
     native_loop_edge_count = 0
     gpu_loop_component_count = 0
     gpu_loop_edge_count = 0
+    cuda_loop_component_count = 0
+    cuda_loop_edge_count = 0
+    metal_loop_component_count = 0
+    metal_loop_edge_count = 0
+    nested_direction_fragment_component_count = 0
     layer_merge_stats = LayerSideMergeStats()
     side_cache: dict[tuple[str, tuple[object, ...]], tuple[tuple[DiffFragment, ...], _ComponentSideStats]] = {}
     for component in source_components:
@@ -130,6 +154,14 @@ def exact_result_from_source_edges(components: tuple[PolygonComponent, ...]) -> 
         native_loop_edge_count += old_stats.native_loop_edge_count + new_stats.native_loop_edge_count
         gpu_loop_component_count += old_stats.gpu_loop_component_count + new_stats.gpu_loop_component_count
         gpu_loop_edge_count += old_stats.gpu_loop_edge_count + new_stats.gpu_loop_edge_count
+        cuda_loop_component_count += old_stats.cuda_loop_component_count + new_stats.cuda_loop_component_count
+        cuda_loop_edge_count += old_stats.cuda_loop_edge_count + new_stats.cuda_loop_edge_count
+        metal_loop_component_count += old_stats.metal_loop_component_count + new_stats.metal_loop_component_count
+        metal_loop_edge_count += old_stats.metal_loop_edge_count + new_stats.metal_loop_edge_count
+        nested_direction_fragment_component_count += (
+            old_stats.nested_direction_fragment_component_count
+            + new_stats.nested_direction_fragment_component_count
+        )
 
     layer_diffs = []
     for layer in sorted(by_layer):
@@ -156,6 +188,10 @@ def exact_result_from_source_edges(components: tuple[PolygonComponent, ...]) -> 
             dropped_zero_area_loop_count=dropped_count,
             gpu_loop_component_count=gpu_loop_component_count,
             gpu_loop_edge_count=gpu_loop_edge_count,
+            cuda_loop_component_count=cuda_loop_component_count,
+            cuda_loop_edge_count=cuda_loop_edge_count,
+            metal_loop_component_count=metal_loop_component_count,
+            metal_loop_edge_count=metal_loop_edge_count,
             native_loop_component_count=native_loop_component_count,
             native_loop_edge_count=native_loop_edge_count,
             gpu_boundary_component_count=gpu_component_count,
@@ -173,9 +209,14 @@ def exact_result_from_source_edges(components: tuple[PolygonComponent, ...]) -> 
             layer_merge_cuda_edge_cancel_transferred_bytes=layer_merge_stats.cuda_edge_cancel_transferred_bytes,
             layer_merge_native_edge_cancel_s=layer_merge_stats.native_edge_cancel_s,
             layer_merge_cuda_loop_trace_s=layer_merge_stats.cuda_loop_trace_s,
+            layer_merge_metal_loop_trace_s=layer_merge_stats.metal_loop_trace_s,
+            layer_merge_metal_loop_kernel_count=layer_merge_stats.metal_loop_kernel_count,
+            layer_merge_metal_loop_event_elapsed_s=layer_merge_stats.metal_loop_event_elapsed_s,
+            layer_merge_metal_loop_transferred_bytes=layer_merge_stats.metal_loop_transferred_bytes,
             layer_merge_native_loop_trace_s=layer_merge_stats.native_loop_trace_s,
             layer_merge_python_loop_trace_s=layer_merge_stats.python_loop_trace_s,
             layer_merge_hole_stitch_s=layer_merge_stats.hole_stitch_s,
+            nested_direction_fragment_component_count=nested_direction_fragment_component_count,
         ),
     )
 
@@ -192,6 +233,10 @@ def _add_layer_merge_stats(left: LayerSideMergeStats, right: LayerSideMergeStats
         cuda_edge_cancel_transferred_bytes=left.cuda_edge_cancel_transferred_bytes + right.cuda_edge_cancel_transferred_bytes,
         native_edge_cancel_s=left.native_edge_cancel_s + right.native_edge_cancel_s,
         cuda_loop_trace_s=left.cuda_loop_trace_s + right.cuda_loop_trace_s,
+        metal_loop_trace_s=left.metal_loop_trace_s + right.metal_loop_trace_s,
+        metal_loop_kernel_count=left.metal_loop_kernel_count + right.metal_loop_kernel_count,
+        metal_loop_event_elapsed_s=left.metal_loop_event_elapsed_s + right.metal_loop_event_elapsed_s,
+        metal_loop_transferred_bytes=left.metal_loop_transferred_bytes + right.metal_loop_transferred_bytes,
         native_loop_trace_s=left.native_loop_trace_s + right.native_loop_trace_s,
         python_loop_trace_s=left.python_loop_trace_s + right.python_loop_trace_s,
         hole_stitch_s=left.hole_stitch_s + right.hole_stitch_s,
@@ -292,6 +337,10 @@ class _ComponentSideStats:
     dropped_zero_area_loop_count: int
     gpu_loop_component_count: int = 0
     gpu_loop_edge_count: int = 0
+    cuda_loop_component_count: int = 0
+    cuda_loop_edge_count: int = 0
+    metal_loop_component_count: int = 0
+    metal_loop_edge_count: int = 0
     native_loop_component_count: int = 0
     native_loop_edge_count: int = 0
     gpu_boundary_component_count: int = 0
@@ -299,6 +348,7 @@ class _ComponentSideStats:
     gpu_split_free_component_count: int = 0
     gpu_mixed_boundary_component_count: int = 0
     gpu_mixed_boundary_edge_count: int = 0
+    nested_direction_fragment_component_count: int = 0
 
 
 def _component_side_diff(component: PolygonComponent, *, direction: str) -> tuple[tuple[DiffFragment, ...], _ComponentSideStats]:
@@ -338,14 +388,19 @@ def _component_side_diff(component: PolygonComponent, *, direction: str) -> tupl
             boundary_edge_count=len(boundary_edges),
             loop_count=len(fragments),
             dropped_zero_area_loop_count=dropped,
-            gpu_loop_component_count=1 if loop_backend == "cuda" else 0,
-            gpu_loop_edge_count=len(boundary_edges) if loop_backend == "cuda" else 0,
+            gpu_loop_component_count=1 if loop_backend in {"cuda", "metal"} else 0,
+            gpu_loop_edge_count=len(boundary_edges) if loop_backend in {"cuda", "metal"} else 0,
+            cuda_loop_component_count=1 if loop_backend == "cuda" else 0,
+            cuda_loop_edge_count=len(boundary_edges) if loop_backend == "cuda" else 0,
+            metal_loop_component_count=1 if loop_backend == "metal" else 0,
+            metal_loop_edge_count=len(boundary_edges) if loop_backend == "metal" else 0,
             native_loop_component_count=1 if loop_backend == "native" else 0,
             native_loop_edge_count=len(boundary_edges) if loop_backend == "native" else 0,
             gpu_boundary_component_count=1 if used_gpu else 0,
             gpu_boundary_edge_count=len(boundary_edges) if used_gpu else 0,
             gpu_mixed_boundary_component_count=1 if used_gpu else 0,
             gpu_mixed_boundary_edge_count=len(boundary_edges) if used_gpu else 0,
+            nested_direction_fragment_component_count=1 if _fragments_have_nested_bboxes(fragments) else 0,
         ),
     )
 
@@ -370,14 +425,41 @@ def _one_sided_union_diff(target_fragments: tuple[DiffFragment, ...]) -> tuple[t
             boundary_edge_count=len(boundary_edges),
             loop_count=len(fragments),
             dropped_zero_area_loop_count=dropped,
-            gpu_loop_component_count=1 if loop_backend == "cuda" else 0,
-            gpu_loop_edge_count=len(boundary_edges) if loop_backend == "cuda" else 0,
+            gpu_loop_component_count=1 if loop_backend in {"cuda", "metal"} else 0,
+            gpu_loop_edge_count=len(boundary_edges) if loop_backend in {"cuda", "metal"} else 0,
+            cuda_loop_component_count=1 if loop_backend == "cuda" else 0,
+            cuda_loop_edge_count=len(boundary_edges) if loop_backend == "cuda" else 0,
+            metal_loop_component_count=1 if loop_backend == "metal" else 0,
+            metal_loop_edge_count=len(boundary_edges) if loop_backend == "metal" else 0,
             native_loop_component_count=1 if loop_backend == "native" else 0,
             native_loop_edge_count=len(boundary_edges) if loop_backend == "native" else 0,
             gpu_boundary_component_count=1 if used_gpu else 0,
             gpu_boundary_edge_count=len(boundary_edges) if used_gpu else 0,
             gpu_split_free_component_count=1 if gpu_split_free else 0,
+            nested_direction_fragment_component_count=1 if _fragments_have_nested_bboxes(fragments) else 0,
         ),
+    )
+
+
+def _fragments_have_nested_bboxes(fragments: Sequence[DiffFragment]) -> bool:
+    bboxes = tuple(fragment.bbox for fragment in fragments)
+    for index, outer in enumerate(bboxes):
+        for inner_index, inner in enumerate(bboxes):
+            if index != inner_index and _bbox_strictly_contains(outer, inner):
+                return True
+    return False
+
+
+def _bbox_strictly_contains(
+    outer: tuple[int, int, int, int],
+    inner: tuple[int, int, int, int],
+) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[2] >= inner[2]
+        and outer[3] >= inner[3]
+        and outer != inner
     )
 
 
@@ -431,7 +513,11 @@ def _maybe_cuda_boundary_edges_for_one_sided_union(
     try:
         return _cuda_boundary_edges_for_one_sided_union(segments, splits, polygons, bboxes), True
     except Exception:
-        return _boundary_edges_for_one_sided_union(segments, splits, polygons, bboxes), False
+        pass
+    # Keep Metal boundary sampling as a direct backend experiment for now. The
+    # production source-edge path uses the CPU reference sampler for parity on
+    # compact, overlapping undercut geometry.
+    return _boundary_edges_for_one_sided_union(segments, splits, polygons, bboxes), False
 
 
 def _maybe_cuda_boundary_edges_for_direction(
@@ -448,7 +534,11 @@ def _maybe_cuda_boundary_edges_for_direction(
     try:
         return _cuda_boundary_edges_for_direction(segments, splits, polygons_by_side, bboxes_by_side, direction=direction), True
     except Exception:
-        return _boundary_edges_for_direction(segments, splits, polygons_by_side, bboxes_by_side, direction=direction), False
+        pass
+    # Keep Metal boundary sampling as a direct backend experiment for now. The
+    # production source-edge path uses the CPU reference sampler for parity on
+    # compact, overlapping undercut geometry.
+    return _boundary_edges_for_direction(segments, splits, polygons_by_side, bboxes_by_side, direction=direction), False
 
 
 def _cuda_boundary_edges_for_direction(
@@ -473,6 +563,38 @@ def _cuda_boundary_edges_for_direction(
     if not piece_rows:
         return ()
     edges = run_cuda_mixed_boundary_edges(
+        vertices,
+        offsets,
+        bboxes,
+        polygon_sides,
+        np.asarray(piece_rows, dtype=np.float64),
+        direction=direction,
+    )
+    return tuple(sorted(((_point_key((edge[0][0], edge[0][1])), _point_key((edge[1][0], edge[1][1]))) for edge in edges)))
+
+
+def _metal_boundary_edges_for_direction(
+    segments: tuple[_SegmentRecord, ...],
+    splits: tuple[tuple[float, ...], ...],
+    polygons_by_side: dict[str, tuple[tuple[Point, ...], ...]],
+    bboxes_by_side: dict[str, tuple[tuple[int, int, int, int], ...]],
+    *,
+    direction: str,
+) -> tuple[FloatSegment, ...]:
+    from .backends.metal_ctypes import run_metal_mixed_boundary_edges
+
+    vertices, offsets, bboxes, polygon_sides = _mixed_cuda_polygon_arrays(polygons_by_side, bboxes_by_side)
+    piece_rows: list[tuple[float, float, float, float]] = []
+    for segment_index, segment in enumerate(segments):
+        for left_t, right_t in zip(splits[segment_index], splits[segment_index][1:]):
+            if right_t - left_t <= 1e-10:
+                continue
+            start = _point_at(segment, left_t)
+            stop = _point_at(segment, right_t)
+            piece_rows.append((start[0], start[1], stop[0], stop[1]))
+    if not piece_rows:
+        return ()
+    edges = run_metal_mixed_boundary_edges(
         vertices,
         offsets,
         bboxes,
@@ -540,6 +662,41 @@ def _cuda_boundary_edges_for_one_sided_union(
     return tuple(sorted(((_point_key((edge[0][0], edge[0][1])), _point_key((edge[1][0], edge[1][1]))) for edge in edges)))
 
 
+def _metal_boundary_edges_for_one_sided_union(
+    segments: tuple[_SegmentRecord, ...],
+    splits: tuple[tuple[float, ...], ...],
+    polygons: tuple[tuple[Point, ...], ...],
+    bboxes: tuple[tuple[int, int, int, int], ...],
+) -> tuple[FloatSegment, ...]:
+    from .backends.metal_ctypes import run_metal_one_sided_boundary_edges
+
+    piece_rows: list[tuple[float, float, float, float]] = []
+    piece_polygon_indices: list[int] = []
+    for segment_index, segment in enumerate(segments):
+        for left_t, right_t in zip(splits[segment_index], splits[segment_index][1:]):
+            if right_t - left_t <= 1e-10:
+                continue
+            start = _point_at(segment, left_t)
+            stop = _point_at(segment, right_t)
+            piece_rows.append((start[0], start[1], stop[0], stop[1]))
+            piece_polygon_indices.append(segment.polygon_index)
+    if not piece_rows:
+        return ()
+    vertices, offsets, signed_areas, _segment_points, _segment_polygon_indices = _one_sided_cuda_arrays(
+        (),
+        polygons,
+    )
+    edges = run_metal_one_sided_boundary_edges(
+        vertices,
+        offsets,
+        np.asarray(bboxes, dtype=np.int64),
+        signed_areas,
+        np.asarray(piece_rows, dtype=np.float64),
+        np.asarray(piece_polygon_indices, dtype=np.uint32),
+    )
+    return tuple(sorted(((_point_key((edge[0][0], edge[0][1])), _point_key((edge[1][0], edge[1][1]))) for edge in edges)))
+
+
 def _one_sided_cuda_arrays(
     segments: tuple[_SegmentRecord, ...],
     polygons: tuple[tuple[Point, ...], ...],
@@ -568,6 +725,9 @@ def _fragments_from_boundary_edges(boundary_edges: tuple[FloatSegment, ...]) -> 
         cuda = _try_cuda_fragments_from_integer_boundary_edges(integer_edges)
         if cuda is not None:
             return list(cuda.fragments), cuda.dropped_zero_area_loop_count, "cuda"
+        metal = _try_metal_fragments_from_integer_boundary_edges(integer_edges)
+        if metal is not None:
+            return list(metal.fragments), metal.dropped_zero_area_loop_count, "metal"
         native = _try_native_fragments_from_integer_boundary_edges(integer_edges)
         if native is not None:
             return list(native.fragments), native.dropped_zero_area_loop_count, "native"
@@ -606,6 +766,13 @@ def _try_cuda_fragments_from_integer_boundary_edges(edges: np.ndarray):
         return run_cuda_boundary_loops_from_edges(edges)
     except Exception:
         return None
+
+
+def _try_metal_fragments_from_integer_boundary_edges(edges: np.ndarray):
+    # The Metal loop tracer is kept as a direct backend experiment, but source-edge
+    # evidence needs the native/Python loop assemblers for parity on compact
+    # overlapping undercut geometry.
+    return None
 
 
 def _try_native_fragments_from_integer_boundary_edges(edges: np.ndarray):

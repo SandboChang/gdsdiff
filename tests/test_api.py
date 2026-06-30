@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import gdstk
+import numpy as np
 import scgds.gdsdiff.api as api_module
 import pytest
 
@@ -133,6 +134,82 @@ def test_cpu_audit_summary_normalizes_collinear_loop_vertices():
 
     assert summary["match"] is True
     assert summary["mismatch_count"] == 0
+
+
+def test_gpu_polygon_metal_source_edge_report_contract(tmp_path, monkeypatch):
+    old_path, new_path = _write_pair(tmp_path)
+    exact_diff_path = tmp_path / "exact_diff.md"
+    import scgds.gdsdiff.backends.metal_ctypes as metal_ctypes
+
+    monkeypatch.setattr(
+        api_module,
+        "_select_backend",
+        lambda config, exact=False: {
+            "requested": "metal",
+            "name": "metal",
+            "cuda_available": False,
+            "cuda_ctypes_available": False,
+            "cuda_extension_available": False,
+            "metal_available": True,
+            "metal_ctypes_available": True,
+            "core_extension_available": False,
+            "nvcc_available": False,
+            "fallback_reason": None,
+        },
+    )
+    monkeypatch.setattr(api_module, "_native_buffers_rectangle_coverage_eligible", lambda *buffers: False)
+    monkeypatch.setattr(metal_ctypes, "release_metal_device_memory", lambda: None)
+
+    def fake_record_delta(old_buffer, new_buffer):
+        old_layer = old_buffer.layer_table.layers[int(old_buffer.layer_ids[0])]
+        new_layer = new_buffer.layer_table.layers[int(new_buffer.layer_ids[0])]
+        return metal_ctypes.MetalPolygonRecordDelta(
+            layers=np.asarray([old_layer.layer, new_layer.layer], dtype=np.int32),
+            datatypes=np.asarray([old_layer.datatype, new_layer.datatype], dtype=np.int32),
+            directions=np.asarray([1, 2], dtype=np.uint8),
+            counts=np.asarray([1, 1], dtype=np.uint64),
+            bboxes=np.asarray([old_buffer.bboxes[0], new_buffer.bboxes[0]], dtype=np.int64),
+            vertex_counts=np.asarray(
+                [
+                    old_buffer.polygon_offsets[1] - old_buffer.polygon_offsets[0],
+                    new_buffer.polygon_offsets[1] - new_buffer.polygon_offsets[0],
+                ],
+                dtype=np.uint64,
+            ),
+            flags=np.asarray([old_buffer.flags[0], new_buffer.flags[0]], dtype=np.uint32),
+            hashes=np.zeros((2, 2), dtype=np.uint64),
+            representative_indices=np.asarray([0, 0], dtype=np.uint64),
+            old_input_count=old_buffer.polygon_count,
+            new_input_count=new_buffer.polygon_count,
+            matched_record_count=0,
+            reduced_key_count=2,
+            metal_kernel_count=2,
+            metal_event_elapsed_s=0.001,
+            transferred_bytes=256,
+        )
+
+    monkeypatch.setattr(metal_ctypes, "run_metal_polygon_record_delta_from_hashes", fake_record_delta)
+
+    result = compare_gds_files(
+        CompareConfig(old_path, new_path, backend="metal", evidence_engine="gpu-polygon"),
+        exact_diff_markdown_path=exact_diff_path,
+    )
+    payload = result.report.to_json_dict()
+    component_area = payload["exact_fallback"]["gpu_polygon_component_area"]
+
+    assert result.status == CompareStatus.DIFFERENCES_FOUND
+    assert payload["backend"]["name"] == "metal"
+    assert payload["backend"]["gpu_polygon_available"] is True
+    assert payload["backend"]["gpu_record_delta_available"] is True
+    assert payload["backend"]["metal_kernel_count"] >= 3
+    assert payload["exact_fallback"]["mode"] == "gpu-polygon-metal-source-edge-records"
+    assert payload["exact_fallback"]["engine_status"] == "source-edge-boundary-records-complete"
+    assert payload["exact_fallback"]["gpu_record_delta_accelerator"] == "metal"
+    assert component_area["gpu_trapezoid_fragments_available"] is False
+    assert component_area["gpu_source_edge_records_available"] is True
+    assert component_area["merged_boundary_loop_records_available"] is True
+    assert payload["exact_verification_complete"] is True
+    assert "gpu-polygon METAL source-edge diff" in exact_diff_path.read_text(encoding="utf-8")
 
 
 def test_public_api_unexpected_difference_returns_failure_exit(tmp_path):

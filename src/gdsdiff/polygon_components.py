@@ -58,6 +58,9 @@ class PolygonComponentStats:
     context_cuda_kernel_count: int = 0
     context_cuda_event_elapsed_s: float = 0.0
     context_cuda_transferred_bytes: int = 0
+    context_metal_kernel_count: int = 0
+    context_metal_event_elapsed_s: float = 0.0
+    context_metal_transferred_bytes: int = 0
 
     def to_json(self) -> dict[str, int | float | str]:
         return {
@@ -71,6 +74,9 @@ class PolygonComponentStats:
             "context_cuda_kernel_count": self.context_cuda_kernel_count,
             "context_cuda_event_elapsed_s": self.context_cuda_event_elapsed_s,
             "context_cuda_transferred_bytes": self.context_cuda_transferred_bytes,
+            "context_metal_kernel_count": self.context_metal_kernel_count,
+            "context_metal_event_elapsed_s": self.context_metal_event_elapsed_s,
+            "context_metal_transferred_bytes": self.context_metal_transferred_bytes,
         }
 
 
@@ -92,6 +98,10 @@ class LayerSideMergeStats:
     cuda_edge_cancel_transferred_bytes: int = 0
     native_edge_cancel_s: float = 0.0
     cuda_loop_trace_s: float = 0.0
+    metal_loop_trace_s: float = 0.0
+    metal_loop_kernel_count: int = 0
+    metal_loop_event_elapsed_s: float = 0.0
+    metal_loop_transferred_bytes: int = 0
     native_loop_trace_s: float = 0.0
     python_loop_trace_s: float = 0.0
     hole_stitch_s: float = 0.0
@@ -108,6 +118,10 @@ class LayerSideMergeStats:
             "cuda_edge_cancel_transferred_bytes": self.cuda_edge_cancel_transferred_bytes,
             "native_edge_cancel_s": self.native_edge_cancel_s,
             "cuda_loop_trace_s": self.cuda_loop_trace_s,
+            "metal_loop_trace_s": self.metal_loop_trace_s,
+            "metal_loop_kernel_count": self.metal_loop_kernel_count,
+            "metal_loop_event_elapsed_s": self.metal_loop_event_elapsed_s,
+            "metal_loop_transferred_bytes": self.metal_loop_transferred_bytes,
             "native_loop_trace_s": self.native_loop_trace_s,
             "python_loop_trace_s": self.python_loop_trace_s,
             "hole_stitch_s": self.hole_stitch_s,
@@ -135,7 +149,10 @@ class _ContextOverlapPairRun:
     wall_s: float = 0.0
     cuda_kernel_count: int = 0
     cuda_event_elapsed_s: float = 0.0
+    metal_kernel_count: int = 0
+    metal_event_elapsed_s: float = 0.0
     transferred_bytes: int = 0
+    accelerator: str = "cpu"
 
     @property
     def pair_count(self) -> int:
@@ -189,6 +206,8 @@ def add_overlapping_context_to_components(
     old_buffer: PolygonBuffer,
     new_buffer: PolygonBuffer,
     components: tuple[PolygonComponent, ...],
+    *,
+    preferred_accelerator: str | None = None,
 ) -> PolygonComponentBuildResult:
     context_start = perf_counter()
     old_fragment_cache: dict[int, DiffFragment] = {}
@@ -199,8 +218,8 @@ def add_overlapping_context_to_components(
     new_source_indices = [
         {polygon.source_index for polygon in component.polygons if polygon.side == "new"} for component in components
     ]
-    old_pair_run = _try_cuda_context_pairs(components, old_buffer)
-    new_pair_run = _try_cuda_context_pairs(components, new_buffer)
+    old_pair_run = _try_accelerated_context_pairs(components, old_buffer, preferred_accelerator=preferred_accelerator)
+    new_pair_run = _try_accelerated_context_pairs(components, new_buffer, preferred_accelerator=preferred_accelerator)
     if old_pair_run is not None and new_pair_run is not None:
         expanded_polygons = [list(component.polygons) for component in components]
         _append_context_pairs(
@@ -228,16 +247,24 @@ def add_overlapping_context_to_components(
                 key=_component_sort_key,
             )
         )
+        accelerator = old_pair_run.accelerator
         return PolygonComponentBuildResult(
             components=expanded_tuple,
             stats=_component_stats(
                 expanded_tuple,
-                context_index_backend="cuda-context-overlap-pairs",
+                context_index_backend=f"{accelerator}-context-overlap-pairs",
                 context_index_s=old_pair_run.wall_s + new_pair_run.wall_s,
                 context_pair_count=old_pair_run.pair_count + new_pair_run.pair_count,
                 context_cuda_kernel_count=old_pair_run.cuda_kernel_count + new_pair_run.cuda_kernel_count,
                 context_cuda_event_elapsed_s=old_pair_run.cuda_event_elapsed_s + new_pair_run.cuda_event_elapsed_s,
-                context_cuda_transferred_bytes=old_pair_run.transferred_bytes + new_pair_run.transferred_bytes,
+                context_cuda_transferred_bytes=(
+                    old_pair_run.transferred_bytes + new_pair_run.transferred_bytes if accelerator == "cuda" else 0
+                ),
+                context_metal_kernel_count=old_pair_run.metal_kernel_count + new_pair_run.metal_kernel_count,
+                context_metal_event_elapsed_s=old_pair_run.metal_event_elapsed_s + new_pair_run.metal_event_elapsed_s,
+                context_metal_transferred_bytes=(
+                    old_pair_run.transferred_bytes + new_pair_run.transferred_bytes if accelerator == "metal" else 0
+                ),
             ),
         )
     old_layer_indices = _indices_by_layer_id(old_buffer)
@@ -458,6 +485,19 @@ def _overlapping_layer_indices(
     return tuple(sorted(int(index) for index in indices[mask]))
 
 
+def _try_accelerated_context_pairs(
+    components: tuple[PolygonComponent, ...],
+    buffer: PolygonBuffer,
+    *,
+    preferred_accelerator: str | None,
+) -> _ContextOverlapPairRun | None:
+    if preferred_accelerator == "cuda":
+        return _try_cuda_context_pairs(components, buffer)
+    if preferred_accelerator == "metal":
+        return _try_metal_context_pairs(components, buffer)
+    return _try_cuda_context_pairs(components, buffer) or _try_metal_context_pairs(components, buffer)
+
+
 def _try_cuda_context_pairs(
     components: tuple[PolygonComponent, ...],
     buffer: PolygonBuffer,
@@ -489,8 +529,47 @@ def _try_cuda_context_pairs(
             cuda_kernel_count=pairs.cuda_kernel_count,
             cuda_event_elapsed_s=pairs.cuda_event_elapsed_s,
             transferred_bytes=pairs.transferred_bytes,
+            accelerator="cuda",
         )
     except (CudaCtypesUnavailable, ImportError, OSError, ValueError, OverflowError):
+        return None
+
+
+def _try_metal_context_pairs(
+    components: tuple[PolygonComponent, ...],
+    buffer: PolygonBuffer,
+) -> _ContextOverlapPairRun | None:
+    if not components or buffer.polygon_count == 0:
+        return _ContextOverlapPairRun(
+            component_indices=np.empty((0,), dtype=np.uint64),
+            polygon_indices=np.empty((0,), dtype=np.uint64),
+            accelerator="metal",
+        )
+    try:
+        from .backends.metal_ctypes import MetalCtypesUnavailable, run_metal_context_overlap_pairs
+
+        component_bboxes, component_layers, component_datatypes = _component_context_arrays(components)
+        polygon_layers, polygon_datatypes = _buffer_layer_datatype_arrays(buffer)
+        start = perf_counter()
+        pairs = run_metal_context_overlap_pairs(
+            component_bboxes,
+            component_layers,
+            component_datatypes,
+            buffer.bboxes,
+            polygon_layers,
+            polygon_datatypes,
+        )
+        wall_s = perf_counter() - start
+        return _ContextOverlapPairRun(
+            component_indices=pairs.component_indices,
+            polygon_indices=pairs.polygon_indices,
+            wall_s=wall_s,
+            metal_kernel_count=pairs.metal_kernel_count,
+            metal_event_elapsed_s=pairs.metal_event_elapsed_s,
+            transferred_bytes=pairs.transferred_bytes,
+            accelerator="metal",
+        )
+    except (MetalCtypesUnavailable, ImportError, OSError, ValueError, OverflowError):
         return None
 
 
@@ -571,6 +650,9 @@ def _component_stats(
     context_cuda_kernel_count: int = 0,
     context_cuda_event_elapsed_s: float = 0.0,
     context_cuda_transferred_bytes: int = 0,
+    context_metal_kernel_count: int = 0,
+    context_metal_event_elapsed_s: float = 0.0,
+    context_metal_transferred_bytes: int = 0,
 ) -> PolygonComponentStats:
     return PolygonComponentStats(
         component_count=len(components),
@@ -583,6 +665,9 @@ def _component_stats(
         context_cuda_kernel_count=context_cuda_kernel_count,
         context_cuda_event_elapsed_s=context_cuda_event_elapsed_s,
         context_cuda_transferred_bytes=context_cuda_transferred_bytes,
+        context_metal_kernel_count=context_metal_kernel_count,
+        context_metal_event_elapsed_s=context_metal_event_elapsed_s,
+        context_metal_transferred_bytes=context_metal_transferred_bytes,
     )
 
 
@@ -610,6 +695,10 @@ def _merge_layer_side_fragments_with_stats(fragments: tuple[DiffFragment, ...]) 
     cuda_edge_cancel_transferred_bytes = 0
     native_edge_cancel_s = 0.0
     cuda_loop_trace_s = 0.0
+    metal_loop_trace_s = 0.0
+    metal_loop_kernel_count = 0
+    metal_loop_event_elapsed_s = 0.0
+    metal_loop_transferred_bytes = 0
     native_loop_trace_s = 0.0
     python_loop_trace_s = 0.0
     hole_stitch_s = 0.0
@@ -628,6 +717,10 @@ def _merge_layer_side_fragments_with_stats(fragments: tuple[DiffFragment, ...]) 
         cuda_edge_cancel_transferred_bytes += assembly.stats.cuda_edge_cancel_transferred_bytes
         native_edge_cancel_s += assembly.stats.native_edge_cancel_s
         cuda_loop_trace_s += assembly.stats.cuda_loop_trace_s
+        metal_loop_trace_s += assembly.stats.metal_loop_trace_s
+        metal_loop_kernel_count += assembly.stats.metal_loop_kernel_count
+        metal_loop_event_elapsed_s += assembly.stats.metal_loop_event_elapsed_s
+        metal_loop_transferred_bytes += assembly.stats.metal_loop_transferred_bytes
         native_loop_trace_s += assembly.stats.native_loop_trace_s
         python_loop_trace_s += assembly.stats.python_loop_trace_s
         hole_stitch_s += assembly.stats.hole_stitch_s
@@ -649,6 +742,10 @@ def _merge_layer_side_fragments_with_stats(fragments: tuple[DiffFragment, ...]) 
             cuda_edge_cancel_transferred_bytes=cuda_edge_cancel_transferred_bytes,
             native_edge_cancel_s=native_edge_cancel_s,
             cuda_loop_trace_s=cuda_loop_trace_s,
+            metal_loop_trace_s=metal_loop_trace_s,
+            metal_loop_kernel_count=metal_loop_kernel_count,
+            metal_loop_event_elapsed_s=metal_loop_event_elapsed_s,
+            metal_loop_transferred_bytes=metal_loop_transferred_bytes,
             native_loop_trace_s=native_loop_trace_s,
             python_loop_trace_s=python_loop_trace_s,
             hole_stitch_s=hole_stitch_s,

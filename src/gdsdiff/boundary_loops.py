@@ -25,6 +25,10 @@ class BoundaryLoopAssemblyStats:
     cuda_edge_cancel_transferred_bytes: int = 0
     native_edge_cancel_s: float = 0.0
     cuda_loop_trace_s: float = 0.0
+    metal_loop_trace_s: float = 0.0
+    metal_loop_kernel_count: int = 0
+    metal_loop_event_elapsed_s: float = 0.0
+    metal_loop_transferred_bytes: int = 0
     native_loop_trace_s: float = 0.0
     python_loop_trace_s: float = 0.0
     hole_stitch_s: float = 0.0
@@ -41,6 +45,10 @@ class BoundaryLoopAssemblyStats:
             "cuda_edge_cancel_transferred_bytes": self.cuda_edge_cancel_transferred_bytes,
             "native_edge_cancel_s": self.native_edge_cancel_s,
             "cuda_loop_trace_s": self.cuda_loop_trace_s,
+            "metal_loop_trace_s": self.metal_loop_trace_s,
+            "metal_loop_kernel_count": self.metal_loop_kernel_count,
+            "metal_loop_event_elapsed_s": self.metal_loop_event_elapsed_s,
+            "metal_loop_transferred_bytes": self.metal_loop_transferred_bytes,
             "native_loop_trace_s": self.native_loop_trace_s,
             "python_loop_trace_s": self.python_loop_trace_s,
             "hole_stitch_s": self.hole_stitch_s,
@@ -66,6 +74,10 @@ def assemble_boundary_loops(fragments: tuple[DiffFragment, ...]) -> BoundaryLoop
     cuda_edge_cancel_transferred_bytes = 0
     native_edge_cancel_s = 0.0
     cuda_loop_trace_s = 0.0
+    metal_loop_trace_s = 0.0
+    metal_loop_kernel_count = 0
+    metal_loop_event_elapsed_s = 0.0
+    metal_loop_transferred_bytes = 0
     native_loop_trace_s = 0.0
     python_loop_trace_s = 0.0
     edge_backend_result = _try_cuda_boundary_edges_from_fragments(fragments)
@@ -85,14 +97,25 @@ def assemble_boundary_loops(fragments: tuple[DiffFragment, ...]) -> BoundaryLoop
         cuda_start = perf_counter()
         cuda_result = _try_cuda_boundary_loop_fragments_array(edge_array)
         cuda_loop_trace_s = perf_counter() - cuda_start
-        native_loop_result = None
+        metal_result = None
         if cuda_result is None:
+            metal_start = perf_counter()
+            metal_result = _try_metal_boundary_loop_fragments_array(edge_array)
+            metal_loop_trace_s = perf_counter() - metal_start
+        native_loop_result = None
+        if cuda_result is None and metal_result is None:
             native_start = perf_counter()
             native_loop_result = _try_native_boundary_loop_fragments_array(edge_array)
             native_loop_trace_s = perf_counter() - native_start
         if cuda_result is not None:
             result = list(cuda_result.fragments)
             dropped = cuda_result.dropped_zero_area_loop_count
+        elif metal_result is not None:
+            result = list(metal_result.fragments)
+            dropped = metal_result.dropped_zero_area_loop_count
+            metal_loop_kernel_count = metal_result.metal_kernel_count
+            metal_loop_event_elapsed_s = metal_result.metal_event_elapsed_s
+            metal_loop_transferred_bytes = metal_result.transferred_bytes
         elif native_loop_result is not None:
             result = list(native_loop_result.fragments)
             dropped = native_loop_result.dropped_zero_area_loop_count
@@ -111,9 +134,19 @@ def assemble_boundary_loops(fragments: tuple[DiffFragment, ...]) -> BoundaryLoop
             result = list(cuda_result.fragments)
             dropped = cuda_result.dropped_zero_area_loop_count
         else:
-            python_start = perf_counter()
-            result, dropped = _fragments_from_python_boundary_edges(boundary_edges)
-            python_loop_trace_s = perf_counter() - python_start
+            metal_start = perf_counter()
+            metal_result = _try_metal_boundary_loop_fragments(boundary_edges)
+            metal_loop_trace_s = perf_counter() - metal_start
+            if metal_result is not None:
+                result = list(metal_result.fragments)
+                dropped = metal_result.dropped_zero_area_loop_count
+                metal_loop_kernel_count = metal_result.metal_kernel_count
+                metal_loop_event_elapsed_s = metal_result.metal_event_elapsed_s
+                metal_loop_transferred_bytes = metal_result.transferred_bytes
+            else:
+                python_start = perf_counter()
+                result, dropped = _fragments_from_python_boundary_edges(boundary_edges)
+                python_loop_trace_s = perf_counter() - python_start
     stitch_start = perf_counter()
     result_tuple = tuple(sorted(_stitch_nested_holes(tuple(result)), key=_fragment_sort_key))
     hole_stitch_s = perf_counter() - stitch_start
@@ -130,6 +163,10 @@ def assemble_boundary_loops(fragments: tuple[DiffFragment, ...]) -> BoundaryLoop
             cuda_edge_cancel_transferred_bytes=cuda_edge_cancel_transferred_bytes,
             native_edge_cancel_s=native_edge_cancel_s,
             cuda_loop_trace_s=cuda_loop_trace_s,
+            metal_loop_trace_s=metal_loop_trace_s,
+            metal_loop_kernel_count=metal_loop_kernel_count,
+            metal_loop_event_elapsed_s=metal_loop_event_elapsed_s,
+            metal_loop_transferred_bytes=metal_loop_transferred_bytes,
             native_loop_trace_s=native_loop_trace_s,
             python_loop_trace_s=python_loop_trace_s,
             hole_stitch_s=hole_stitch_s,
@@ -215,6 +252,17 @@ def _try_cuda_boundary_loop_fragments_array(edges: Any):
         return None
 
 
+def _try_metal_boundary_loop_fragments_array(edges: Any):
+    if len(edges) < 512:
+        return None
+    try:
+        from .backends.metal_ctypes import run_metal_boundary_loops_from_edges
+
+        return run_metal_boundary_loops_from_edges(edges)
+    except Exception:
+        return None
+
+
 def _try_native_boundary_loop_fragments_array(edges: Any):
     if len(edges) < 64:
         return None
@@ -242,6 +290,19 @@ def _try_cuda_boundary_loop_fragments(edges: tuple[Segment, ...]):
         from .backends.cuda_ctypes import run_cuda_boundary_loops_from_edges
 
         return run_cuda_boundary_loops_from_edges(np.asarray([(a[0], a[1], b[0], b[1]) for a, b in edges], dtype=np.int64))
+    except Exception:
+        return None
+
+
+def _try_metal_boundary_loop_fragments(edges: tuple[Segment, ...]):
+    if len(edges) < 512:
+        return None
+    try:
+        import numpy as np
+
+        from .backends.metal_ctypes import run_metal_boundary_loops_from_edges
+
+        return run_metal_boundary_loops_from_edges(np.asarray([(a[0], a[1], b[0], b[1]) for a, b in edges], dtype=np.int64))
     except Exception:
         return None
 

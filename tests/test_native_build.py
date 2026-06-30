@@ -30,6 +30,8 @@ def test_native_capability_discovery_is_cpu_safe(monkeypatch):
     assert isinstance(data["cuda_extension_available"], bool)
     assert isinstance(data["cuda_ctypes_available"], bool)
     assert data["cuda_available"] == (data["cuda_extension_available"] or data["cuda_ctypes_available"])
+    assert isinstance(data["metal_ctypes_available"], bool)
+    assert data["metal_available"] == data["metal_ctypes_available"]
     assert data["cuda_architectures"] == ["75", "86", "89"]
     assert data["tool_version"] == "0.1.0-dev"
 
@@ -50,6 +52,7 @@ def test_pyproject_defines_cpu_safe_console_entry_point():
     assert pyproject["tool"]["setuptools"]["packages"]["find"]["include"] == ["scgds*"]
     assert "scgds.tests*" in pyproject["tool"]["setuptools"]["packages"]["find"]["exclude"]
     assert "native_src/gdsdiff/*" in pyproject["tool"]["setuptools"]["package-data"]["scgds.gdsdiff"]
+    assert (_repo_root() / "scgds" / "gdsdiff" / "native_src" / "gdsdiff" / "metal_ctypes.mm").exists()
 
 
 def test_native_cache_path_uses_external_override(monkeypatch, tmp_path):

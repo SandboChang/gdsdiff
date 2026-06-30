@@ -545,9 +545,11 @@ int gds_polygon_extract(const char* path, const char* top_name, GdsPolygonExtrac
         out->bboxes = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * polygons.size() * 4));
         out->flags = static_cast<std::uint32_t*>(std::malloc(sizeof(std::uint32_t) * polygons.size()));
         out->source_ids = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * polygons.size()));
+        out->hashes = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * polygons.size() * 2));
         if (!out->polygon_offsets || (!out->vertices_xy && vertex_count) || (!out->layers && !polygons.empty())
             || (!out->datatypes && !polygons.empty()) || (!out->bboxes && !polygons.empty())
-            || (!out->flags && !polygons.empty()) || (!out->source_ids && !polygons.empty())) {
+            || (!out->flags && !polygons.empty()) || (!out->source_ids && !polygons.empty())
+            || (!out->hashes && !polygons.empty())) {
             throw std::bad_alloc();
         }
         std::uint64_t vertex_offset = 0;
@@ -562,6 +564,9 @@ int gds_polygon_extract(const char* path, const char* top_name, GdsPolygonExtrac
             out->bboxes[index * 4 + 3] = polygon.bbox.y1;
             out->flags[index] = polygon.flags;
             out->source_ids[index] = static_cast<std::uint64_t>(index);
+            const auto hash = canonical_polygon_hash(polygon);
+            out->hashes[index * 2 + 0] = hash.first;
+            out->hashes[index * 2 + 1] = hash.second;
             for (const auto& point : polygon.points) {
                 out->vertices_xy[vertex_offset * 2 + 0] = point.x;
                 out->vertices_xy[vertex_offset * 2 + 1] = point.y;

@@ -36,6 +36,7 @@ class RectExactStats:
     identical_skipped_tasks: int = 0
     cpu_rect_set_tasks: int = 0
     cuda_rect_set_tasks: int = 0
+    metal_rect_set_tasks: int = 0
 
 
 class ManhattanRectExactComponentBackend:
@@ -116,7 +117,7 @@ class CudaManhattanRectExactComponentBackend:
                     cuda_set_items.append((index, task, rect_sets[0], rect_sets[1]))
                     continue
                 try:
-                    diffs[index] = _compare_rect_set_task(task)
+                    diffs[index] = _compare_rect_or_rect_set_task(task)
                     rect_set += 1
                     continue
                 except UnsupportedExactComponent:
@@ -140,7 +141,7 @@ class CudaManhattanRectExactComponentBackend:
             if max_rects > 16:
                 for index, task, _old_rects, _new_rects in cuda_set_items:
                     try:
-                        diffs[index] = _compare_rect_set_task(task)
+                        diffs[index] = _compare_rect_or_rect_set_task(task)
                         rect_set += 1
                     except UnsupportedExactComponent:
                         unsupported += 1
@@ -173,7 +174,7 @@ class CudaManhattanRectExactComponentBackend:
                 if cuda_rects is None or cuda_counts is None or cuda_areas is None:
                     for index, task, _old_rects, _new_rects in cuda_set_items:
                         try:
-                            diffs[index] = _compare_rect_set_task(task)
+                            diffs[index] = _compare_rect_or_rect_set_task(task)
                             rect_set += 1
                         except UnsupportedExactComponent:
                             unsupported += 1
@@ -265,6 +266,13 @@ def _compare_rect_set_task(task: ExactLayerTask) -> LayerExactDiff:
         new_minus_old=new_fragments,
         xor=old_fragments + new_fragments,
     )
+
+
+def _compare_rect_or_rect_set_task(task: ExactLayerTask) -> LayerExactDiff:
+    try:
+        return _compare_rect_task(task)
+    except UnsupportedExactComponent:
+        return _compare_rect_set_task(task)
 
 
 def _task_rect_pair(task: ExactLayerTask) -> tuple[tuple[int, int, int, int] | None, tuple[int, int, int, int] | None]:

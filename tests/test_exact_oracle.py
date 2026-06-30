@@ -19,6 +19,7 @@ from scgds.gdsdiff.backends.cuda_ctypes import (
     run_cuda_rect_set_exact_fragments,
 )
 from scgds.gdsdiff.backends.metal import MetalExactUnavailable, MetalManhattanRectExactComponentBackend
+from scgds.gdsdiff.backends.metal_ctypes import metal_ctypes_available, run_metal_rect_set_exact_fragments
 from scgds.gdsdiff.exact_oracle import ExactLayerTask, _component_task_specs, _sparse_rectangle_residual_task_specs
 from scgds.gdsdiff.extract import extract_gds_polygons
 from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
@@ -554,10 +555,49 @@ def test_cuda_manhattan_rect_backend_matches_equal_count_fixture():
     assert actual.layers[0].xor_twice_area == expected.layers[0].xor_twice_area
 
 
-def test_metal_exact_backend_surface_fails_closed_when_unavailable():
+def test_metal_rect_set_exact_fragments_kernel_matches_expected_area():
+    if not metal_ctypes_available():
+        pytest.skip("Metal ctypes backend is not available")
+    old_rects = np.asarray([[[0, 0, 10, 10], [10, 0, 20, 10]]], dtype=np.int64)
+    new_rects = np.asarray([[[5, 0, 15, 10], [20, 0, 25, 10]]], dtype=np.int64)
+    old_counts = np.asarray([2], dtype=np.uint8)
+    new_counts = np.asarray([2], dtype=np.uint8)
+
+    rects, counts, areas = run_metal_rect_set_exact_fragments(old_rects, new_rects, old_counts, new_counts)
+
+    assert counts.shape == (1, 2)
+    assert areas.tolist() == [[200, 100, 300]]
+    assert counts[0, 0] >= 1
+    assert counts[0, 1] >= 1
+    emitted_old_area = sum((r[2] - r[0]) * (r[3] - r[1]) * 2 for r in rects[0, 0, : counts[0, 0]])
+    emitted_new_area = sum((r[2] - r[0]) * (r[3] - r[1]) * 2 for r in rects[0, 1, : counts[0, 1]])
+    assert emitted_old_area == 200
+    assert emitted_new_area == 100
+
+
+def test_metal_rect_backend_uses_metal_or_fails_closed():
     backend = MetalManhattanRectExactComponentBackend()
 
     assert backend.capabilities().name == "metal-manhattan-rect-exact-component"
     assert backend.capabilities().requires_gpu is True
-    with pytest.raises((MetalExactUnavailable, UnsupportedExactComponent)):
-        backend.compare_components(())
+    task = ExactLayerTask(
+        LayerSpec(1, 0),
+        1.0,
+        (tuple(_rect(0, 0, 10, 10)), tuple(_rect(10, 0, 20, 10))),
+        (tuple(_rect(5, 0, 15, 10)), tuple(_rect(20, 0, 25, 10))),
+        partition="bbox-component",
+    )
+    if not metal_ctypes_available():
+        with pytest.raises(MetalExactUnavailable):
+            backend.compare_components((task,))
+        return
+
+    diff = backend.compare_components((task,))[0]
+
+    assert backend.stats.metal_rect_set_tasks == 1
+    assert backend.stats.cpu_rect_set_tasks == 0
+    assert backend.stats.fallback_tasks == 0
+    assert backend.stats.unsupported_tasks == 0
+    assert diff.old_minus_new_twice_area == 200
+    assert diff.new_minus_old_twice_area == 100
+    assert diff.xor_twice_area == 300

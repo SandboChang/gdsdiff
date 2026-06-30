@@ -83,10 +83,11 @@ def _buffer_from_result(
     flags = _copy_array(result.flags, polygon_count, np.uint32)
     source_ids = _copy_array(result.source_ids, polygon_count, np.uint64)
     selected = _selected_layers(layers)
+    hashes = _copy_array(result.hashes, polygon_count * 2, np.uint64).reshape((polygon_count, 2))
     if selected is not None:
         keep = _selected_mask(raw_layers, raw_datatypes, selected)
         if not np.all(keep):
-            vertices, offsets, raw_layers, raw_datatypes, bboxes, flags, source_ids = _filter_polygons(
+            vertices, offsets, raw_layers, raw_datatypes, bboxes, flags, source_ids, hashes = _filter_polygons(
                 vertices,
                 offsets,
                 raw_layers,
@@ -94,6 +95,7 @@ def _buffer_from_result(
                 bboxes,
                 flags,
                 source_ids,
+                hashes,
                 keep,
             )
     table, layer_ids = _build_layer_table(raw_layers, raw_datatypes)
@@ -105,6 +107,7 @@ def _buffer_from_result(
         flags=flags.astype(np.uint32, copy=False),
         source_ids=source_ids.astype(np.uint64, copy=False),
         layer_table=table,
+        polygon_hashes=hashes.astype(np.uint64, copy=False),
     )
 
 
@@ -144,8 +147,9 @@ def _filter_polygons(
     bboxes: np.ndarray,
     flags: np.ndarray,
     source_ids: np.ndarray,
+    hashes: np.ndarray,
     keep: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     kept_indices = np.nonzero(keep)[0]
     new_vertices: list[np.ndarray] = []
     new_offsets = [0]
@@ -163,6 +167,7 @@ def _filter_polygons(
         bboxes[keep].astype(np.int64, copy=False),
         flags[keep].astype(np.uint32, copy=False),
         source_ids[keep].astype(np.uint64, copy=False),
+        hashes[keep].astype(np.uint64, copy=False),
     )
 
 

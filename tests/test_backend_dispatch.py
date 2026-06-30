@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 import gdstk
 
+from scgds.gdsdiff import api as api_module
 from scgds.gdsdiff import Backend, CompareConfig, CompareStatus, compare_gds_files
+from scgds.gdsdiff.backends.identity import compare_file_identity_accelerated
+from scgds.gdsdiff.native import NativeCapabilities, discover_native_capabilities
 
 
 def _write_pair(tmp_path, *, shifted=True):
@@ -20,6 +23,19 @@ def _write_pair(tmp_path, *, shifted=True):
     return old_path, new_path
 
 
+def _capabilities(*, cuda: bool = False, metal: bool = False) -> NativeCapabilities:
+    return NativeCapabilities(
+        tool_version="test",
+        core_extension_available=False,
+        cuda_extension_available=False,
+        cuda_ctypes_available=cuda,
+        metal_ctypes_available=metal,
+        cmake_available=False,
+        nvcc_available=False,
+        cuda_architectures=(),
+    )
+
+
 def test_auto_backend_uses_cuda_when_available(tmp_path):
     old_path, new_path = _write_pair(tmp_path)
 
@@ -27,11 +43,70 @@ def test_auto_backend_uses_cuda_when_available(tmp_path):
 
     assert result.status == CompareStatus.UNEXPECTED_DIFFERENCES
     assert result.report.backend["requested"] == "auto"
-    assert result.report.backend["name"] in {"cuda", "cpu"}
-    if result.report.backend["name"] == "cuda":
+    assert result.report.backend["name"] in {"cuda", "metal", "cpu"}
+    if result.report.backend["name"] in {"cuda", "metal"}:
         assert result.report.backend["fallback_reason"] is None
     else:
         assert result.report.backend["fallback_reason"]
+
+
+def test_auto_backend_selects_metal_when_cuda_is_absent(monkeypatch):
+    monkeypatch.setattr(api_module, "discover_native_capabilities", lambda: _capabilities(cuda=False, metal=True))
+
+    selected = api_module._select_backend(CompareConfig("old.gds", "new.gds", backend=Backend.AUTO))
+
+    assert selected["requested"] == "auto"
+    assert selected["name"] == "metal"
+    assert selected["fallback_reason"] is None
+
+
+def test_auto_backend_prefers_cuda_when_both_gpu_backends_are_available(monkeypatch):
+    monkeypatch.setattr(api_module, "discover_native_capabilities", lambda: _capabilities(cuda=True, metal=True))
+
+    selected = api_module._select_backend(CompareConfig("old.gds", "new.gds", backend=Backend.AUTO))
+
+    assert selected["name"] == "cuda"
+
+
+def test_auto_backend_reports_no_gpu_fallback_reason(monkeypatch):
+    monkeypatch.setattr(api_module, "discover_native_capabilities", lambda: _capabilities(cuda=False, metal=False))
+
+    selected = api_module._select_backend(CompareConfig("old.gds", "new.gds", backend=Backend.AUTO))
+
+    assert selected["name"] == "cpu"
+    assert selected["fallback_reason"] == "no CUDA or Metal backend runtime is available"
+
+
+def test_auto_selected_cuda_is_fast_path_eligible(monkeypatch):
+    monkeypatch.setattr(api_module, "discover_native_capabilities", lambda: _capabilities(cuda=True, metal=False))
+    config = CompareConfig("old.gds", "new.gds", backend=Backend.AUTO)
+
+    selected = api_module._select_backend(config)
+
+    assert selected["name"] == "cuda"
+    assert api_module._accelerated_fast_path_eligible(config, selected)
+
+
+def test_auto_selected_metal_is_fast_path_eligible(monkeypatch):
+    monkeypatch.setattr(api_module, "discover_native_capabilities", lambda: _capabilities(cuda=False, metal=True))
+    config = CompareConfig("old.gds", "new.gds", backend=Backend.AUTO)
+
+    selected = api_module._select_backend(config)
+
+    assert selected["name"] == "metal"
+    assert api_module._accelerated_fast_path_eligible(config, selected)
+
+
+def test_accelerated_identity_prefers_selected_metal_backend_for_size_mismatch(tmp_path):
+    old_path = tmp_path / "old.bin"
+    new_path = tmp_path / "new.bin"
+    old_path.write_bytes(b"abc")
+    new_path.write_bytes(b"abcd")
+
+    identity = compare_file_identity_accelerated(old_path, new_path, preferred_backend="metal")
+
+    assert identity.method == "metal-byte-compare"
+    assert identity.same is False
 
 
 def test_cpu_backend_has_no_fallback_reason(tmp_path):
@@ -46,6 +121,8 @@ def test_cpu_backend_has_no_fallback_reason(tmp_path):
 
 
 def test_explicit_cuda_backend_runs_when_available(tmp_path):
+    if not discover_native_capabilities().cuda_available:
+        pytest.skip("CUDA backend is not available")
     old_path, new_path = _write_pair(tmp_path)
 
     result = compare_gds_files(CompareConfig(old_path, new_path, backend=Backend.CUDA, tile_size=10))
@@ -55,8 +132,25 @@ def test_explicit_cuda_backend_runs_when_available(tmp_path):
 
 
 def test_require_gpu_uses_cuda_when_available(tmp_path):
+    capabilities = discover_native_capabilities()
+    if not (capabilities.cuda_available or capabilities.metal_available):
+        pytest.skip("no GPU backend is available")
     old_path, new_path = _write_pair(tmp_path)
 
     result = compare_gds_files(CompareConfig(old_path, new_path, backend=Backend.AUTO, require_gpu=True, tile_size=10))
 
-    assert result.report.backend["name"] == "cuda"
+    assert result.report.backend["name"] in {"cuda", "metal"}
+
+
+def test_explicit_metal_backend_requires_metal_runtime(tmp_path):
+    capabilities = discover_native_capabilities()
+    old_path, new_path = _write_pair(tmp_path)
+
+    if not capabilities.metal_available:
+        with pytest.raises(ValueError, match="Metal backend runtime is not available"):
+            compare_gds_files(CompareConfig(old_path, new_path, backend=Backend.METAL, tile_size=10))
+        return
+
+    result = compare_gds_files(CompareConfig(old_path, new_path, backend=Backend.METAL, tile_size=10))
+
+    assert result.report.backend["name"] == "metal"

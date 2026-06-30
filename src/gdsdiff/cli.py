@@ -32,7 +32,7 @@ def build_parser(
         choices=[item.value for item in EvidenceEngine],
         default=EvidenceEngine.AUTO.value,
         help=(
-            "Evidence generator to use. For gdsdiff, auto selects gpu-polygon when CUDA is available "
+            "Evidence generator to use. For gdsdiff, auto selects gpu-polygon for available GPU backends "
             "and otherwise selects the CPU gdstk oracle."
         ),
     )
@@ -214,9 +214,6 @@ def _resolve_evidence_engine(
         return evidence_engine
     if not neutral_fallback:
         return evidence_engine
-    requested_backend = Backend.coerce(backend)
-    if requested_backend == Backend.METAL:
-        return EvidenceEngine.GDSTK_ORACLE.value
     return EvidenceEngine.GPU_POLYGON.value
 
 

@@ -27,6 +27,7 @@ from scgds.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_n
 from scgds.gdsdiff.config import LayerSpec
 from scgds.gdsdiff.exact_oracle import DiffFragment
 from scgds.gdsdiff.geometry import polygon_bbox, polygon_twice_area
+from scgds.gdsdiff import polygon_components as pc
 from scgds.gdsdiff.polygon_components import (
     add_overlapping_context_to_components,
     build_record_delta_surplus_components,
@@ -620,6 +621,55 @@ def test_context_components_clip_new_surplus_against_existing_old_coverage(tmp_p
     assert context_result.stats.context_pair_count == 3
     assert len(context_components[0].polygons) == 3
     assert areas.tolist() == [[0, 16_000_000, 16_000_000]]
+
+
+def test_context_expansion_prefers_metal_context_pairs(tmp_path, monkeypatch):
+    old_path = tmp_path / "old.gds"
+    new_path = tmp_path / "new.gds"
+    for path in (old_path, new_path):
+        lib = gdstk.Library(unit=1e-6, precision=1e-9)
+        top = lib.new_cell("top")
+        top.add(gdstk.rectangle((0, 0), (4, 4), layer=1, datatype=0))
+        lib.write_gds(path)
+    old_native = extract_gds_polygons_native(old_path)
+    new_native = extract_gds_polygons_native(new_path)
+    component = pc.PolygonComponent(
+        layer=LayerSpec(1, 0),
+        polygons=(
+            pc.ComponentPolygon(
+                side="new",
+                source_index=0,
+                fragment=pc._fragment_from_buffer(new_native.buffer, 0),
+            ),
+        ),
+    )
+    preferred: list[str | None] = []
+
+    def fake_context_pairs(components, buffer, *, preferred_accelerator):
+        preferred.append(preferred_accelerator)
+        return pc._ContextOverlapPairRun(
+            component_indices=np.asarray([0], dtype=np.uint64),
+            polygon_indices=np.asarray([0], dtype=np.uint64),
+            metal_kernel_count=1,
+            transferred_bytes=17,
+            accelerator="metal",
+        )
+
+    monkeypatch.setattr(pc, "_try_accelerated_context_pairs", fake_context_pairs)
+
+    result = add_overlapping_context_to_components(
+        old_native.buffer,
+        new_native.buffer,
+        (component,),
+        preferred_accelerator="metal",
+    )
+
+    assert preferred == ["metal", "metal"]
+    assert result.stats.context_index_backend == "metal-context-overlap-pairs"
+    assert result.stats.context_metal_kernel_count == 2
+    assert result.stats.context_metal_transferred_bytes == 34
+    assert result.stats.context_cuda_kernel_count == 0
+    assert len(result.components[0].polygons) == 2
 
 
 def test_cuda_polygon_component_fragments_clip_new_surplus_against_existing_old_coverage(tmp_path):
