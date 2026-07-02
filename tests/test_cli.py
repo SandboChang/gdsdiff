@@ -24,6 +24,87 @@ def _write_pair(tmp_path):
     return old_path, new_path
 
 
+def test_cli_template_subcommands_produce_expected_artifacts(tmp_path):
+    source_path = tmp_path / "source.gds"
+    template_path = tmp_path / "template.gds"
+    metadata_path = tmp_path / "template.json"
+    target_path = tmp_path / "target.gds"
+    output_dir = tmp_path / "find"
+
+    source = gdstk.Library(unit=1e-6, precision=1e-6)
+    source_top = source.new_cell("TOP")
+    source_top.add(gdstk.rectangle((100, 50), (110, 60), layer=1, datatype=0))
+    source_top.add(gdstk.rectangle((114, 51), (116, 53), layer=1, datatype=0))
+    source_top.add(gdstk.rectangle((100, 50), (110, 60), layer=2, datatype=0))
+    source.write_gds(source_path)
+
+    extracted = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scgds.gdsdiff",
+            "extract-template",
+            str(source_path),
+            "--top",
+            "TOP",
+            "--layers",
+            "1:0",
+            "--bbox",
+            "95,45,120,70",
+            "--output-gds",
+            str(template_path),
+            "--metadata",
+            str(metadata_path),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert extracted.returncode == 0
+    assert f"template_gds={template_path}" in extracted.stdout
+    assert f"metadata={metadata_path}" in extracted.stdout
+    assert metadata_path.exists()
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["template"]["polygon_count"] == 2
+
+    target = gdstk.Library(unit=1e-6, precision=1e-6)
+    target_top = target.new_cell("TARGET")
+    target_top.add(gdstk.rectangle((205, 35), (215, 45), layer=1, datatype=0))
+    target_top.add(gdstk.rectangle((219, 36), (221, 38), layer=1, datatype=0))
+    target.write_gds(target_path)
+
+    found = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scgds.gdsdiff",
+            "find-template",
+            str(template_path),
+            str(target_path),
+            "--template-top",
+            "TEMPLATE",
+            "--target-top",
+            "TARGET",
+            "--layers",
+            "1:0",
+            "--output-dir",
+            str(output_dir),
+            "--transforms",
+            "translate",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert found.returncode == 0
+    assert "match_count=1" in found.stdout
+    payload = json.loads((output_dir / "matches.json").read_text(encoding="utf-8"))
+    assert payload["summary"] == {"candidate_count": 1, "difference_count": 0, "match_count": 1}
+    assert (output_dir / "matches.md").exists()
+
+
 def test_cli_writes_requested_artifacts_for_difference(tmp_path):
     old_path, new_path = _write_pair(tmp_path)
     report_path = tmp_path / "report.json"
@@ -201,6 +282,8 @@ def test_cli_cuda_exact_component_backend_reports_stats_when_available(tmp_path)
 
 
 def test_cli_gpu_polygon_engine_uses_exact_cuda_rect_coverage_for_rectangle_input(tmp_path):
+    if not discover_native_capabilities().cuda_available:
+        pytest.skip("CUDA fast backend is not available")
     old_path, new_path = _write_pair(tmp_path)
     report_path = tmp_path / "report.json"
     exact_diff_markdown_path = tmp_path / "exact_diff.md"
@@ -247,6 +330,8 @@ def test_cli_gpu_polygon_engine_uses_exact_cuda_rect_coverage_for_rectangle_inpu
 
 
 def test_cli_gpu_polygon_engine_uses_source_edge_records_for_non_rectangle_without_audit(tmp_path):
+    if not discover_native_capabilities().cuda_available:
+        pytest.skip("CUDA fast backend is not available")
     old_path = tmp_path / "old_tri.gds"
     new_path = tmp_path / "new_tri.gds"
     old_lib = gdstk.Library(unit=1e-6, precision=1e-9)
@@ -302,6 +387,8 @@ def test_cli_gpu_polygon_engine_uses_source_edge_records_for_non_rectangle_witho
 
 
 def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
+    if not discover_native_capabilities().cuda_available:
+        pytest.skip("CUDA fast backend is not available")
     old_path, new_path = _write_pair(tmp_path)
     report_path = tmp_path / "report.json"
     exact_diff_markdown_path = tmp_path / "exact_diff.md"

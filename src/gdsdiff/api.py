@@ -2694,9 +2694,12 @@ def _run_tile_prefilter(
     tile_config: TileConfig,
 ) -> CpuTilePrefilterResult:
     if backend_info.get("name") == Backend.CUDA.value:
-        from .backends.cuda_ctypes import run_cuda_ctypes_tile_prefilter
+        from .backends.cuda_ctypes import CudaCtypesUnavailable, run_cuda_ctypes_tile_prefilter
 
-        return run_cuda_ctypes_tile_prefilter(old_buffer, old_canonical_ids, new_buffer, new_canonical_ids, tile_config)
+        try:
+            return run_cuda_ctypes_tile_prefilter(old_buffer, old_canonical_ids, new_buffer, new_canonical_ids, tile_config)
+        except CudaCtypesUnavailable:
+            pass
     if backend_info.get("name") == Backend.METAL.value:
         from .backends.metal_ctypes import MetalCtypesUnavailable, run_metal_ctypes_tile_prefilter
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from .api import compare_gds_files
 from .config import AllowedRegion, CompareConfig, LayerSpec
 from .semantics import Backend, DifferenceDirection, EvidenceEngine, FailurePolicy
+from .templates import extract_template, find_template
 
 
 def build_parser(
@@ -121,6 +122,11 @@ def _main(
     general_output: bool,
 ) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "extract-template":
+        return _main_extract_template(argv[1:], prog=f"{prog} extract-template")
+    if argv and argv[0] == "find-template":
+        return _main_find_template(argv[1:], prog=f"{prog} find-template")
+
     parser = build_parser(prog=prog, description=description, default_backend=default_backend)
     args = parser.parse_args(argv)
     try:
@@ -190,6 +196,93 @@ def _main(
     return result.exit_code
 
 
+def build_extract_template_parser(*, prog: str = "gdsdiff extract-template") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description="Extract an inspectable normalized template GDS from a source GDS.")
+    parser.add_argument("source_gds", type=Path)
+    parser.add_argument("--top", dest="top_name", help="Source top cell. Defaults to the GDS top cell when unambiguous.")
+    parser.add_argument("--layers", default="all", help="Layer selector such as '1:0,2:0' or 'all'.")
+    parser.add_argument("--bbox", required=True, type=_parse_user_bbox, metavar="X0,Y0,X1,Y1", help="Selection bbox in GDS user units.")
+    parser.add_argument("--output-gds", required=True, type=Path, help="Standalone template GDS path.")
+    parser.add_argument("--metadata", type=Path, help="JSON metadata sidecar. Defaults to OUTPUT_GDS with .json suffix.")
+    parser.add_argument("--template-top", default="TEMPLATE", help="Top cell name for the output template GDS.")
+    parser.add_argument("--quiet", action="store_true")
+    return parser
+
+
+def build_find_template_parser(*, prog: str = "gdsdiff find-template") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description="Find exact normalized template matches in a target GDS.")
+    parser.add_argument("template_gds", type=Path)
+    parser.add_argument("target_gds", type=Path)
+    parser.add_argument("--template-top", default="TEMPLATE", help="Template top cell name.")
+    parser.add_argument("--target-top", "--top", dest="target_top", help="Target top cell. Defaults to the GDS top cell when unambiguous.")
+    parser.add_argument("--layers", default="all", help="Layer selector such as '1:0,2:0' or 'all'.")
+    parser.add_argument("--output-dir", required=True, type=Path, help="Directory for matches.json and matches.md.")
+    parser.add_argument(
+        "--transforms",
+        default="translate",
+        type=_parse_transform_list,
+        help="Comma-separated transform set. Supported values: translate,rot90.",
+    )
+    parser.add_argument("--allow-mirror", action="store_true", help="Also search mirrored variants of the selected transforms.")
+    parser.add_argument("--quiet", action="store_true")
+    return parser
+
+
+def _main_extract_template(argv: list[str], *, prog: str) -> int:
+    parser = build_extract_template_parser(prog=prog)
+    args = parser.parse_args(argv)
+    try:
+        metadata_path = args.metadata or args.output_gds.with_suffix(".json")
+        result = extract_template(
+            args.source_gds,
+            output_gds=args.output_gds,
+            metadata_path=metadata_path,
+            top_name=args.top_name,
+            layers=args.layers,
+            bbox_user=args.bbox,
+            template_top=args.template_top,
+        )
+    except Exception as exc:
+        print(f"{prog}: {exc}", file=sys.stderr)
+        return 2
+
+    if not args.quiet:
+        template = result.metadata["template"]
+        print(f"template_gds={result.output_gds}")
+        print(f"metadata={result.metadata_path}")
+        print(f"polygon_count={template['polygon_count']}")
+        print(f"signature_sha256={template['signature_sha256']}")
+    return 0
+
+
+def _main_find_template(argv: list[str], *, prog: str) -> int:
+    parser = build_find_template_parser(prog=prog)
+    args = parser.parse_args(argv)
+    try:
+        result = find_template(
+            args.template_gds,
+            args.target_gds,
+            output_dir=args.output_dir,
+            template_top=args.template_top,
+            target_top=args.target_top,
+            layers=args.layers,
+            transforms=args.transforms,
+            allow_mirror=args.allow_mirror,
+        )
+    except Exception as exc:
+        print(f"{prog}: {exc}", file=sys.stderr)
+        return 2
+
+    if not args.quiet:
+        summary = result.result["summary"]
+        print(f"matches_json={result.matches_json}")
+        print(f"matches_markdown={result.matches_markdown}")
+        print(f"candidate_count={summary['candidate_count']}")
+        print(f"match_count={summary['match_count']}")
+        print(f"difference_count={summary['difference_count']}")
+    return 0
+
+
 def _resolve_artifact_paths(args: argparse.Namespace) -> tuple[Path | None, Path | None, Path | None, Path | None]:
     json_report_path = args.json_report
     diff_gds_path = args.diff_gds
@@ -201,6 +294,29 @@ def _resolve_artifact_paths(args: argparse.Namespace) -> tuple[Path | None, Path
         json_report_path = json_report_path or output_dir / "report.json"
         exact_diff_markdown_path = exact_diff_markdown_path or output_dir / "exact_diff.md"
     return json_report_path, diff_gds_path, markdown_path, exact_diff_markdown_path
+
+
+def _parse_user_bbox(value: str) -> tuple[float, float, float, float]:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError("bbox must have form X0,Y0,X1,Y1")
+    try:
+        x0, y0, x1, y1 = (float(part) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("bbox coordinates must be numeric") from exc
+    if x0 >= x1 or y0 >= y1:
+        raise argparse.ArgumentTypeError("bbox must satisfy X0 < X1 and Y0 < Y1")
+    return x0, y0, x1, y1
+
+
+def _parse_transform_list(value: str) -> tuple[str, ...]:
+    transforms = tuple(part.strip().lower() for part in value.split(",") if part.strip())
+    if not transforms:
+        raise argparse.ArgumentTypeError("at least one transform is required")
+    unknown = set(transforms) - {"translate", "rot90"}
+    if unknown:
+        raise argparse.ArgumentTypeError(f"unknown transform(s): {', '.join(sorted(unknown))}")
+    return transforms
 
 
 def _resolve_evidence_engine(

@@ -215,7 +215,7 @@ def test_gpu_polygon_metal_source_edge_report_contract(tmp_path, monkeypatch):
 def test_public_api_unexpected_difference_returns_failure_exit(tmp_path):
     old_path, new_path = _write_pair(tmp_path)
 
-    result = compare_gds_files(CompareConfig(old_path, new_path, tile_size=10))
+    result = compare_gds_files(CompareConfig(old_path, new_path, backend="cpu", tile_size=10))
 
     assert result.status == CompareStatus.UNEXPECTED_DIFFERENCES
     assert result.exit_code == 1
@@ -249,7 +249,7 @@ def test_public_api_allowed_difference_respects_failure_policy(tmp_path):
 
 def test_public_api_exact_mode_matches_cpu_prefilter_status_and_areas(tmp_path):
     old_path, new_path = _write_pair(tmp_path)
-    config = CompareConfig(old_path, new_path, tile_size=10)
+    config = CompareConfig(old_path, new_path, backend="cpu", tile_size=10)
 
     accelerated = compare_gds_files(config)
     exact = compare_gds_files(config, exact=True)
@@ -263,7 +263,7 @@ def test_windowed_report_does_not_claim_full_exact_verification(tmp_path, monkey
     old_path, new_path = _write_pair(tmp_path)
     monkeypatch.setattr(api_module, "_should_use_layer_exact", lambda *args, **kwargs: False)
 
-    result = compare_gds_files(CompareConfig(old_path, new_path, tile_size=10))
+    result = compare_gds_files(CompareConfig(old_path, new_path, backend="cpu", tile_size=10))
     payload = result.report.to_json_dict()
 
     assert payload["exact_fallback"]["mode"] == "windowed"
