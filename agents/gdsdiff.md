@@ -16,8 +16,9 @@
 - During agent workflows, do not use console-script shims such as `gdsdiff` or
   `.venv/bin/gdsdiff`; they can point at stale virtual environments.
 - Use the repo-local Python module entrypoint:
-  - Linux/WSL: `.venv/bin/python -m scgds.gdsdiff`
+  - Windows 11 through WSL: `.venv_wsl/bin/python -m scgds.gdsdiff`
   - macOS: `.venv_mac/bin/python -m scgds.gdsdiff`
+  - Native Linux: `.venv/bin/python -m scgds.gdsdiff`
 - If the matching repo-local interpreter is missing or cannot import
   `scgds.gdsdiff`, tell the user and skip the diff check.
 - Do not install packages, repair shims, or create a new environment unless the
