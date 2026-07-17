@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from gdsdiff.native import nvcc_architecture_flags
+
 
 def test_cuda_assignment_kernels_match_cpu_reference(tmp_path):
     nvcc = shutil.which("nvcc")
@@ -20,6 +22,7 @@ def test_cuda_assignment_kernels_match_cpu_reference(tmp_path):
             nvcc,
             "-std=c++20",
             "-O2",
+            *nvcc_architecture_flags(),
             str(source_dir / "core.cpp"),
             str(source_dir / "cuda_assignment.cu"),
             str(source_dir / "test_cuda_assignment.cu"),

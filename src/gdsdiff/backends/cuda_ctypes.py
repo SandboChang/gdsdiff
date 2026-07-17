@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +12,7 @@ import numpy as np
 from ..config import LayerSpec
 from ..exact_oracle import DiffFragment
 from ..geometry import PolygonBuffer
+from ..native import nvcc_architecture_flags
 from ..native_cache import ensure_cached_native_library
 from ..polygon_components import PolygonComponent
 from ..tiling import CpuTilePrefilterResult, OversizedPolygon, TileConfig, TileKey
@@ -1009,6 +1012,7 @@ def _polygon_record_transfer_bytes(*packed_buffers: dict[str, np.ndarray]) -> in
     return sum(int(array.nbytes) for packed in packed_buffers for array in packed.values())
 
 
+@lru_cache(maxsize=1)
 def _load_library() -> ctypes.CDLL:
     path = _library_path()
     library = ctypes.CDLL(str(path))
@@ -1225,6 +1229,7 @@ def _load_library() -> ctypes.CDLL:
 
 def _build_library(path: Path) -> None:
     source = _source_path()
+    architecture_flags = nvcc_architecture_flags()
     path.parent.mkdir(parents=True, exist_ok=True)
     command = [
         "nvcc",
@@ -1233,6 +1238,7 @@ def _build_library(path: Path) -> None:
         "--shared",
         "-Xcompiler",
         "-fPIC",
+        *architecture_flags,
         str(source),
         "-o",
         str(path),
@@ -1246,10 +1252,21 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
+    architecture_flags = nvcc_architecture_flags()
     return ensure_cached_native_library(
         "_gds_compare_cuda_ctypes.so",
         sources=(_source_path(),),
-        build_key=("nvcc", "-std=c++17", "-O3", "--shared", "-Xcompiler", "-fPIC"),
+        build_key=(
+            "nvcc",
+            "-std=c++17",
+            "-O3",
+            "--shared",
+            "-Xcompiler",
+            "-fPIC",
+            *architecture_flags,
+            f"NVCC_PREPEND_FLAGS={os.environ.get('NVCC_PREPEND_FLAGS', '')}",
+            f"NVCC_APPEND_FLAGS={os.environ.get('NVCC_APPEND_FLAGS', '')}",
+        ),
         builder=_build_library,
     )
 

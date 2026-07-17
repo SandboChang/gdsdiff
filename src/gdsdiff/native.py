@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 from dataclasses import dataclass
+from functools import lru_cache
 
 from ._environment import get_environment
 from .report import TOOL_VERSION
@@ -21,6 +23,7 @@ class NativeCapabilities:
     cmake_available: bool
     nvcc_available: bool
     cuda_architectures: tuple[str, ...]
+    cuda_compile_flags: tuple[str, ...] = ()
 
     @property
     def cpu_available(self) -> bool:
@@ -47,6 +50,7 @@ class NativeCapabilities:
             "cmake_available": self.cmake_available,
             "nvcc_available": self.nvcc_available,
             "cuda_architectures": list(self.cuda_architectures),
+            "cuda_compile_flags": list(self.cuda_compile_flags),
         }
 
 
@@ -57,9 +61,10 @@ def discover_native_capabilities() -> NativeCapabilities:
         cuda_extension_available=_module_available("gdsdiff._gds_compare_cuda"),
         cuda_ctypes_available=_cuda_ctypes_available(),
         metal_ctypes_available=_metal_ctypes_available(),
-        cmake_available=shutil.which("cmake") is not None,
-        nvcc_available=shutil.which("nvcc") is not None,
+        cmake_available=_which_tool("cmake", os.environ.get("PATH")) is not None,
+        nvcc_available=_which_tool("nvcc", os.environ.get("PATH")) is not None,
         cuda_architectures=_cuda_architectures_from_env(),
+        cuda_compile_flags=nvcc_architecture_flags(),
     )
 
 
@@ -68,6 +73,13 @@ def _module_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, AttributeError, ValueError):
         return False
+
+
+@lru_cache(maxsize=16)
+def _which_tool(name: str, path: str | None) -> str | None:
+    """Resolve a tool once per PATH value while honoring runtime PATH changes."""
+
+    return shutil.which(name, path=path)
 
 
 def _cuda_ctypes_available() -> bool:
@@ -91,3 +103,22 @@ def _metal_ctypes_available() -> bool:
 def _cuda_architectures_from_env() -> tuple[str, ...]:
     raw = get_environment(CUDA_ARCH_ENV, LEGACY_CUDA_ARCH_ENV, "") or ""
     return tuple(part.strip() for part in raw.replace(";", ",").split(",") if part.strip())
+
+
+def nvcc_architecture_flags() -> tuple[str, ...]:
+    """Translate configured CUDA architectures into native-SASS nvcc flags."""
+
+    configured_architectures = _cuda_architectures_from_env()
+    if not configured_architectures:
+        return ("-arch=native",)
+    flags = []
+    for configured in configured_architectures:
+        architecture = configured.lower()
+        for prefix in ("sm_", "compute_"):
+            if architecture.startswith(prefix):
+                architecture = architecture[len(prefix) :]
+                break
+        if not architecture.isdigit():
+            raise ValueError(f"invalid CUDA architecture {configured!r}; expected values such as '89' or '120'")
+        flags.append(f"--generate-code=arch=compute_{architecture},code=sm_{architecture}")
+    return tuple(flags)

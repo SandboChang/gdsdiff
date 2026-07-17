@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from gdsdiff.native import nvcc_architecture_flags
+
 
 def test_cuda_byte_compare_detects_equal_size_content_change(tmp_path):
     if shutil.which("nvcc") is None:
@@ -41,6 +43,7 @@ def test_cuda_candidate_compaction_matches_cpu_prefilter(tmp_path):
             nvcc,
             "-std=c++20",
             "-O2",
+            *nvcc_architecture_flags(),
             str(source_dir / "core.cpp"),
             str(source_dir / "cuda_assignment.cu"),
             str(source_dir / "cuda_candidates.cu"),

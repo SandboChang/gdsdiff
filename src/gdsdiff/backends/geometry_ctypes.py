@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from ..config import LayerSpec
@@ -169,6 +170,7 @@ def geometry_ctypes_available() -> bool:
     return True
 
 
+@lru_cache(maxsize=1)
 def _load_library() -> ctypes.CDLL:
     path = _library_path()
     library = ctypes.CDLL(str(path))

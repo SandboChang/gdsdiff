@@ -4,6 +4,7 @@ import ctypes
 import platform
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -668,6 +669,7 @@ def _context_overlap_max_pairs() -> int:
     return value if value > 0 else 64 * 1024 * 1024
 
 
+@lru_cache(maxsize=1)
 def _load_library() -> ctypes.CDLL:
     if platform.system() != "Darwin" or platform.machine() not in {"arm64", "aarch64"}:
         raise MetalCtypesUnavailable("Metal ctypes backend requires macOS on Apple Silicon")

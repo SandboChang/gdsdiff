@@ -9,7 +9,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
     import tomli as tomllib
 
 import gdsdiff
-from gdsdiff.native import CUDA_ARCH_ENV, LEGACY_CUDA_ARCH_ENV, discover_native_capabilities
+import gdsdiff.native as native_module
+from gdsdiff.native import CUDA_ARCH_ENV, LEGACY_CUDA_ARCH_ENV, discover_native_capabilities, nvcc_architecture_flags
 from gdsdiff.native_cache import (
     ENV_NATIVE_CACHE_DIR,
     LEGACY_ENV_NATIVE_CACHE_DIR,
@@ -41,7 +42,40 @@ def test_native_capability_discovery_is_cpu_safe(monkeypatch):
     assert isinstance(data["metal_ctypes_available"], bool)
     assert data["metal_available"] == data["metal_ctypes_available"]
     assert data["cuda_architectures"] == ["75", "86", "89"]
+    assert data["cuda_compile_flags"] == [
+        "--generate-code=arch=compute_75,code=sm_75",
+        "--generate-code=arch=compute_86,code=sm_86",
+        "--generate-code=arch=compute_89,code=sm_89",
+    ]
+    assert nvcc_architecture_flags() == (
+        "--generate-code=arch=compute_75,code=sm_75",
+        "--generate-code=arch=compute_86,code=sm_86",
+        "--generate-code=arch=compute_89,code=sm_89",
+    )
     assert data["tool_version"] == "0.1.0.dev0"
+
+
+def test_default_cuda_architecture_is_native(monkeypatch):
+    monkeypatch.delenv(CUDA_ARCH_ENV, raising=False)
+    monkeypatch.delenv(LEGACY_CUDA_ARCH_ENV, raising=False)
+
+    assert nvcc_architecture_flags() == ("-arch=native",)
+
+
+def test_tool_lookup_cache_tracks_path_changes(monkeypatch):
+    calls = []
+
+    def fake_which(name, *, path=None):
+        calls.append((name, path))
+        return f"{path}/{name}" if path == "with-tools" else None
+
+    native_module._which_tool.cache_clear()
+    monkeypatch.setattr(native_module.shutil, "which", fake_which)
+    assert native_module._which_tool("nvcc", "without-tools") is None
+    assert native_module._which_tool("nvcc", "with-tools") == "with-tools/nvcc"
+    assert native_module._which_tool("nvcc", "with-tools") == "with-tools/nvcc"
+    assert calls == [("nvcc", "without-tools"), ("nvcc", "with-tools")]
+    native_module._which_tool.cache_clear()
 
 
 def test_pyproject_defines_cpu_safe_console_entry_point():
@@ -99,3 +133,4 @@ def test_cmake_options_keep_cuda_and_python_extension_optional():
     assert "pybind11_add_module(_gds_compare_cuda cuda_bindings.cu)" in native_cmake
     assert "option(GDSDIFF_ENABLE_CUDA" in native_cmake
     assert "GDS_GPU_COMPARE_ENABLE_CUDA" in native_cmake
+    assert "set(CMAKE_CUDA_ARCHITECTURES native)" in native_cmake

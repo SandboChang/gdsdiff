@@ -66,6 +66,11 @@ debugging guidance.
 - CUDA requires an NVIDIA GPU, a compatible driver, and the CUDA toolkit with
   `nvcc` available. On WSL, install the NVIDIA WSL CUDA toolkit without a Linux
   display driver.
+- On-demand builds default to NVIDIA's `-arch=native`: `nvcc` detects visible
+  GPUs and emits native SASS without PTX. For cross-machine builds, set
+  `GDSDIFF_CUDA_ARCHITECTURES` to comma-separated compute capabilities without
+  decimals (for example, `89,120`). Targets and standard `NVCC_*_FLAGS` are
+  included in the content-addressed cache key.
 - Metal requires Apple Silicon/macOS with the Xcode command-line tools.
 - Missing or unusable accelerators fall back to CPU unless `require_gpu=True`
   is explicitly requested.

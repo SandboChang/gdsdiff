@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -192,6 +193,7 @@ def _ptr_u64(array: np.ndarray):
     return array.ctypes.data_as(ctypes.POINTER(ctypes.c_uint64))
 
 
+@lru_cache(maxsize=1)
 def _load_library() -> ctypes.CDLL:
     path = _library_path()
     library = ctypes.CDLL(str(path))

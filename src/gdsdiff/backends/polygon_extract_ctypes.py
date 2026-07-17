@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -181,6 +182,7 @@ def _copy_array(pointer, count: int, dtype) -> np.ndarray:
     return np.frombuffer(array, dtype=dtype).copy()
 
 
+@lru_cache(maxsize=1)
 def _load_library() -> ctypes.CDLL:
     path = _library_path()
     library = ctypes.CDLL(str(path))
