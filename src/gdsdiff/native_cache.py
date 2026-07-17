@@ -109,11 +109,19 @@ def _exclusive_cache_lock(
     while descriptor is None:
         try:
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
+        except (FileExistsError, PermissionError) as exc:
+            # Windows can report an existing O_EXCL lock as access denied when
+            # another process or thread still owns the directory entry.
+            if isinstance(exc, PermissionError) and sys.platform != "win32":
+                raise
             try:
                 age_s = time.time() - path.stat().st_mtime
             except FileNotFoundError:
                 continue
+            except PermissionError:
+                # A Windows sharing violation is itself evidence that the lock
+                # is live; do not misclassify it as a cache permission failure.
+                age_s = 0.0
             if age_s > stale_after_s:
                 try:
                     path.unlink()

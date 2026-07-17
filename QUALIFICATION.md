@@ -11,7 +11,7 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
   diagnostics; the Calibrator-specific profile factory moved back to `scgds`.
 - Correctness: normalized report JSON, semantic diff GDS, and CLI help exactly
   match the embedded baseline.
-- Tests: the final local WSL suite produced 262 passes and 62
+- Tests: the final local WSL suite produced 263 passes and 62
   capability/fixture skips with zero failures or warnings. Peak test-process
   RSS in the extraction parity run was 158,440 KiB.
 - Hosted portability: GitHub Actions run `29576086947` passed the complete

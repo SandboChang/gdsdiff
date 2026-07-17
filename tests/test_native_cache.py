@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import gdsdiff.native_cache as native_cache
 from gdsdiff.native_cache import (
     ENV_NATIVE_CACHE_DIR,
     content_addressed_library_path,
@@ -76,3 +77,30 @@ def test_failed_build_does_not_publish_partial_library(monkeypatch, tmp_path):
 
     assert not tuple((tmp_path / "cache").rglob("*.so"))
     assert not tuple((tmp_path / "cache").rglob(".*.lock"))
+
+
+def test_windows_access_denied_for_existing_lock_is_retried(monkeypatch, tmp_path):
+    monkeypatch.setenv(ENV_NATIVE_CACHE_DIR, str(tmp_path / "cache"))
+    monkeypatch.setattr(native_cache.sys, "platform", "win32")
+    source = tmp_path / "source.cpp"
+    source.write_text("source", encoding="utf-8")
+    real_open = native_cache.os.open
+    attempts = 0
+
+    def open_with_one_sharing_violation(path, flags, mode=0o777):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(13, "simulated Windows sharing violation", path)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(native_cache.os, "open", open_with_one_sharing_violation)
+    path = ensure_cached_native_library(
+        "probe.so",
+        sources=(source,),
+        build_key=("fake-compiler",),
+        builder=lambda target: target.write_bytes(b"complete-library"),
+    )
+
+    assert attempts >= 2
+    assert path.read_bytes() == b"complete-library"
