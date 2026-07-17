@@ -92,7 +92,7 @@ def test_synthetic_representative_cases_match_metal_with_cpu_audit_when_availabl
     )
 
     for record in records:
-        result = compare_gds_files(
+        result = _compare_metal_or_skip(
             CompareConfig(record.before_path, record.after_path, backend="metal", evidence_engine="gpu-polygon"),
             exact_diff_markdown_path=record.before_path.parent / "metal_exact_diff.md",
             audit_cpu_oracle=True,
@@ -113,7 +113,7 @@ def test_synthetic_adversarial_cases_match_metal_with_cpu_audit_when_available(t
     )
 
     for record in records:
-        result = compare_gds_files(
+        result = _compare_metal_or_skip(
             CompareConfig(record.before_path, record.after_path, backend="metal", evidence_engine="gpu-polygon"),
             exact_diff_markdown_path=record.before_path.parent / "metal_exact_diff.md",
             audit_cpu_oracle=True,
@@ -132,3 +132,12 @@ def _metal_available() -> bool:
         return first and discover_native_capabilities().metal_available
     except Exception:
         return False
+
+
+def _compare_metal_or_skip(*args, **kwargs):
+    try:
+        return compare_gds_files(*args, **kwargs)
+    except ValueError as exc:
+        if "Metal backend runtime is not available" in str(exc):
+            pytest.skip("Metal runtime became unavailable after capability probing")
+        raise
