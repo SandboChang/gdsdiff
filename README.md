@@ -17,12 +17,13 @@ python -m pip install gdsdiff
 For local development from this checkout:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv_wsl UV_LINK_MODE=copy uv sync --locked --extra dev
-TMPDIR=/tmp .venv_wsl/bin/python -m pytest
+UV_PROJECT_ENVIRONMENT=.venv_wsl UV_LINK_MODE=copy uv sync --locked --no-dev
+UV_PROJECT_ENVIRONMENT=.venv_wsl_test UV_LINK_MODE=copy uv sync --locked --extra dev
+TMPDIR=/tmp .venv_wsl_test/bin/python -m pytest
 ```
 
-Use a repository-local virtual environment: `.venv_wsl` on Windows 11 through
-WSL, `.venv_mac` on macOS, and `.venv` on native Linux.
+On WSL, `.venv_wsl` is the clean runtime environment and `.venv_wsl_test` owns
+all test tooling. Use `.venv_mac` on macOS and `.venv` on native Linux.
 
 ## Command line
 

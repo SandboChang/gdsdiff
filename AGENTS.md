@@ -8,13 +8,15 @@ artifacts, acceleration, or agent-facing diff workflows.
 ## Environment
 
 - Identify the host OS and architecture before environment-sensitive work.
-- Use `.venv_wsl/bin/python` on Windows 11 through WSL,
-  `.venv_mac/bin/python` on macOS, and `.venv/bin/python` on native Linux.
+- Use `.venv_wsl/bin/python` for normal imports and runtime development on
+  Windows 11 through WSL, and `.venv_wsl_test/bin/python` for every test run.
+  Use `.venv_mac/bin/python` on macOS, and `.venv/bin/python` on native Linux.
 - Do not use the base system Python for imports, builds, or tests.
 - CPU behavior must remain usable without CUDA, Metal, CMake, or a compiler.
 - Use the exact `uv` version required by `pyproject.toml`. On WSL under
-  `/mnt/f`, set `UV_PROJECT_ENVIRONMENT=.venv_wsl`, `UV_LINK_MODE=copy`, and
-  `TMPDIR=/tmp` for pytest. Use `.venv_mac` on macOS and `.venv` on Linux.
+  `/mnt/f`, keep `.venv_wsl` synchronized without test extras, target
+  `.venv_wsl_test` with development/test extras, set `UV_LINK_MODE=copy`, and
+  set `TMPDIR=/tmp` for pytest. Use `.venv_mac` on macOS and `.venv` on Linux.
 
 ## Development Rules
 

@@ -62,3 +62,12 @@ jobs now pass `--repo "$GITHUB_REPOSITORY"` explicitly while retaining
 `--verify-tag`.
 The bounded TestPyPI loop also refreshes the package explicitly so uv cannot
 retain a negative index response across attempts.
+
+WSL environment isolation was requalified on 2026-07-18 after separating the
+clean runtime environment from test tooling. `.venv_wsl` was recreated from
+the committed lock with `--no-dev` and contains no pytest installation;
+`.venv_wsl_test` was recreated with the development extra and passes the locked
+dependency check. With `/usr/local/cuda/bin` exposed for CUDA-sensitive tests,
+the complete test suite passed from `.venv_wsl_test` with 329 passed and 17
+expected skips for unavailable Apple Metal hardware and optional local GDS
+fixtures. CUDA tests used the verified RTX 5090 / CUDA Toolkit 13.3.73 backend.
