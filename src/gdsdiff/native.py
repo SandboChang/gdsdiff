@@ -55,6 +55,8 @@ class NativeCapabilities:
 
 
 def discover_native_capabilities() -> NativeCapabilities:
+    """Inspect already prepared capabilities without compiling native code."""
+
     return NativeCapabilities(
         tool_version=TOOL_VERSION,
         core_extension_available=_module_available("gdsdiff._gds_compare_core"),
@@ -62,12 +64,13 @@ def discover_native_capabilities() -> NativeCapabilities:
         cuda_ctypes_available=_cuda_ctypes_available(),
         metal_ctypes_available=_metal_ctypes_available(),
         cmake_available=_which_tool("cmake", os.environ.get("PATH")) is not None,
-        nvcc_available=_which_tool("nvcc", os.environ.get("PATH")) is not None,
+        nvcc_available=resolve_nvcc_path() is not None,
         cuda_architectures=_cuda_architectures_from_env(),
         cuda_compile_flags=nvcc_architecture_flags(),
     )
 
 
+@lru_cache(maxsize=16)
 def _module_available(name: str) -> bool:
     try:
         return importlib.util.find_spec(name) is not None
@@ -83,21 +86,29 @@ def _which_tool(name: str, path: str | None) -> str | None:
 
 
 def _cuda_ctypes_available() -> bool:
-    try:
-        from .backends.cuda_ctypes import cuda_ctypes_available
+    from .backends.cuda_ctypes import prepared_cuda_library_path
 
-        return cuda_ctypes_available()
-    except Exception:
-        return False
+    return prepared_cuda_library_path().is_file()
 
 
 def _metal_ctypes_available() -> bool:
-    try:
-        from .backends.metal_ctypes import metal_ctypes_available
+    from .native_cache import native_cache_dir
 
-        return metal_ctypes_available()
-    except Exception:
-        return False
+    return any(native_cache_dir().glob("_gds_compare_metal_ctypes-*.dylib"))
+
+
+def resolve_nvcc_path() -> str | None:
+    """Return the CUDA compiler from PATH or conventional toolkit locations."""
+
+    resolved = _which_tool("nvcc", os.environ.get("PATH"))
+    if resolved:
+        return resolved
+    candidates = []
+    for variable in ("CUDA_HOME", "CUDA_PATH"):
+        if os.environ.get(variable):
+            candidates.append(os.path.join(os.environ[variable], "bin", "nvcc"))
+    candidates.extend(("/usr/local/cuda/bin/nvcc", "/opt/cuda/bin/nvcc"))
+    return next((candidate for candidate in candidates if os.path.isfile(candidate) and os.access(candidate, os.X_OK)), None)
 
 
 def _cuda_architectures_from_env() -> tuple[str, ...]:

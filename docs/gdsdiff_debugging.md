@@ -52,8 +52,8 @@ Common causes:
 
 ## Known Limitations
 
-- CUDA kernels are qualified as broad-phase/native components, but Python
-  production dispatch still falls back to CPU exact verification.
+- CUDA native components are prepared explicitly or on first explicit CUDA use;
+  automatic selection uses prepared capabilities and retains CPU exact fallback.
 - Metal behavior is covered by portable tests; real acceleration requires
   macOS on Apple Silicon with the Xcode command-line tools.
 - No GPU Boolean exact oracle is enabled. `gdstk` remains the exact authority.

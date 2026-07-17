@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ._version import __version__
 from .api import compare_gds_files
 from .config import CompareConfig, parse_allowed_region, parse_allowed_whole_layer
 from .semantics import Backend, EvidenceEngine, FailurePolicy
@@ -20,6 +21,7 @@ def build_parser(
         prog=prog,
         description=description or "Compare two GDS files with exact CPU verification.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("old_gds", type=Path)
     parser.add_argument("new_gds", type=Path)
     parser.add_argument("--top")

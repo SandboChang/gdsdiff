@@ -63,7 +63,8 @@ is the actual subject.
 
 ## Current Backend Semantics
 
-CPU broad-phase and CUDA native kernels are candidate generators. The exact
-fallback remains `gdstk`. CUDA Python dispatch is not enabled as a production
-pass/fail authority in Plan 1. Metal and Manhattan GPU Boolean work are
-documented future optional campaigns.
+CPU broad-phase and optional CUDA/Metal native kernels generate accelerated
+evidence under the same backend-neutral contracts. Full exact CPU verification
+through `gdstk` remains the reference authority. CUDA installation is CPU-safe;
+native compilation occurs only during explicit preparation or first explicit
+CUDA use. Metal remains experimental until qualified on Apple Silicon hardware.

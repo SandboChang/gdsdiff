@@ -12,8 +12,8 @@ import numpy as np
 from ..config import LayerSpec
 from ..exact_oracle import DiffFragment
 from ..geometry import PolygonBuffer
-from ..native import nvcc_architecture_flags
-from ..native_cache import ensure_cached_native_library
+from ..native import nvcc_architecture_flags, resolve_nvcc_path
+from ..native_cache import content_addressed_library_path, ensure_cached_native_library, native_cache_dir
 from ..polygon_components import PolygonComponent
 from ..tiling import CpuTilePrefilterResult, OversizedPolygon, TileConfig, TileKey
 
@@ -1231,8 +1231,11 @@ def _build_library(path: Path) -> None:
     source = _source_path()
     architecture_flags = nvcc_architecture_flags()
     path.parent.mkdir(parents=True, exist_ok=True)
+    nvcc = resolve_nvcc_path()
+    if nvcc is None:
+        raise CudaCtypesUnavailable("nvcc is not available; install the CUDA toolkit or set CUDA_HOME")
     command = [
-        "nvcc",
+        nvcc,
         "-std=c++17",
         "-O3",
         "--shared",
@@ -1252,22 +1255,41 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
-    architecture_flags = nvcc_architecture_flags()
+    build_key = _cuda_build_key()
     return ensure_cached_native_library(
         "_gds_compare_cuda_ctypes.so",
         sources=(_source_path(),),
-        build_key=(
-            "nvcc",
-            "-std=c++17",
-            "-O3",
-            "--shared",
-            "-Xcompiler",
-            "-fPIC",
-            *architecture_flags,
-            f"NVCC_PREPEND_FLAGS={os.environ.get('NVCC_PREPEND_FLAGS', '')}",
-            f"NVCC_APPEND_FLAGS={os.environ.get('NVCC_APPEND_FLAGS', '')}",
-        ),
+        build_key=build_key,
         builder=_build_library,
+    )
+
+
+def prepared_cuda_library_path() -> Path:
+    """Return the current toolchain/device cache target without building it."""
+
+    return _prepared_cuda_library_path_cached(_cuda_build_key(), str(native_cache_dir()))
+
+
+@lru_cache(maxsize=16)
+def _prepared_cuda_library_path_cached(
+    build_key: tuple[str, ...], cache_directory: str
+) -> Path:
+    return content_addressed_library_path(
+        "_gds_compare_cuda_ctypes.so", sources=(_source_path(),), build_key=build_key
+    )
+
+
+def _cuda_build_key() -> tuple[str, ...]:
+    return (
+        resolve_nvcc_path() or "nvcc",
+        "-std=c++17",
+        "-O3",
+        "--shared",
+        "-Xcompiler",
+        "-fPIC",
+        *nvcc_architecture_flags(),
+        f"NVCC_PREPEND_FLAGS={os.environ.get('NVCC_PREPEND_FLAGS', '')}",
+        f"NVCC_APPEND_FLAGS={os.environ.get('NVCC_APPEND_FLAGS', '')}",
     )
 
 

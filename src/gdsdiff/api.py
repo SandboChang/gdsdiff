@@ -2668,6 +2668,19 @@ def _file_identity(old_path: Path, new_path: Path, *, preferred_backend: str | N
 def _select_backend(config: CompareConfig, *, exact: bool = False) -> dict[str, object]:
     requested = Backend.coerce(config.backend)
     capabilities = discover_native_capabilities()
+    if (
+        not exact
+        and not capabilities.cuda_available
+        and capabilities.nvcc_available
+        and (requested == Backend.CUDA or (requested == Backend.AUTO and config.require_gpu))
+    ):
+        try:
+            from .cuda_setup import prepare_cuda
+
+            prepare_cuda()
+            capabilities = discover_native_capabilities()
+        except Exception:
+            pass
     base = {
         "requested": requested.value,
         "cuda_available": capabilities.cuda_available,

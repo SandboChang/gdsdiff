@@ -10,8 +10,6 @@ toolchains are runtime capabilities, not mandatory Python dependencies.
 
 ## Install
 
-For a future published release:
-
 ```bash
 python -m pip install gdsdiff
 ```
@@ -19,8 +17,8 @@ python -m pip install gdsdiff
 For local development from this checkout:
 
 ```bash
-python -m pip install -e ".[test]"
-python -m pytest
+UV_PROJECT_ENVIRONMENT=.venv_wsl UV_LINK_MODE=copy uv sync --locked --extra dev
+TMPDIR=/tmp .venv_wsl/bin/python -m pytest
 ```
 
 Use a repository-local virtual environment: `.venv_wsl` on Windows 11 through
@@ -64,8 +62,9 @@ debugging guidance.
 ## Optional acceleration
 
 - CUDA requires an NVIDIA GPU, a compatible driver, and the CUDA toolkit with
-  `nvcc` available. On WSL, install the NVIDIA WSL CUDA toolkit without a Linux
-  display driver.
+  `nvcc` available. On WSL, install the Windows NVIDIA display driver and the
+  WSL CUDA toolkit, never a Linux display driver. `nvcc` is discovered from
+  `PATH`, `CUDA_HOME`, `/usr/local/cuda`, or `/opt/cuda`.
 - On-demand builds default to NVIDIA's `-arch=native`: `nvcc` detects visible
   GPUs and emits native SASS without PTX. For cross-machine builds, set
   `GDSDIFF_CUDA_ARCHITECTURES` to comma-separated compute capabilities without
@@ -75,8 +74,16 @@ debugging guidance.
 - Missing or unusable accelerators fall back to CPU unless `require_gpu=True`
   is explicitly requested.
 
-Runtime capability details are available through
-`gdsdiff.discover_native_capabilities()`.
+Installation and import never compile GPU code. Inspect the CUDA toolchain with
+`gdsdiff.inspect_cuda_toolchain()`, then build and verify the optional backend
+with `gdsdiff.prepare_cuda()` or `gdsdiff-prepare-cuda --json`. Explicit
+`backend="cuda"` use retains lazy preparation. Passive diagnostics and
+`discover_native_capabilities()` report only already-prepared backends.
+
+Native artifacts are stored in a private, content-addressed user cache keyed by
+source, compiler/toolkit identity, build flags, and native GPU identity. The
+optional geometry cache uses JSON plus non-executable NumPy arrays; legacy
+pickle cache entries are ignored and rebuilt.
 
 ## License
 

@@ -52,7 +52,7 @@ def test_native_capability_discovery_is_cpu_safe(monkeypatch):
         "--generate-code=arch=compute_86,code=sm_86",
         "--generate-code=arch=compute_89,code=sm_89",
     )
-    assert data["tool_version"] == "0.1.0.dev0"
+    assert data["tool_version"] == gdsdiff.__version__
 
 
 def test_default_cuda_architecture_is_native(monkeypatch):
@@ -85,11 +85,12 @@ def test_pyproject_defines_cpu_safe_console_entry_point():
 
     assert pyproject["build-system"]["build-backend"] == "setuptools.build_meta"
     assert pyproject["project"]["name"] == "gdsdiff"
-    assert pyproject["project"]["version"] == "0.1.0.dev0"
+    assert pyproject["project"]["version"] == gdsdiff.__version__
     assert pyproject["project"]["license"] == "GPL-3.0-only"
     assert pyproject["project"]["readme"] == "README.md"
     assert pyproject["project"]["scripts"]["gdsdiff"] == "gdsdiff.cli:main"
     assert pyproject["project"]["scripts"]["gdsdiff-diagnostics"] == "gdsdiff.diagnostics:main"
+    assert pyproject["project"]["scripts"]["gdsdiff-prepare-cuda"] == "gdsdiff.cuda_setup:main"
     assert "gdstk>=1.0.0" in dependencies
     assert "numpy>=1.26" in dependencies
     assert "pytest>=8" in optional_dependencies["test"]

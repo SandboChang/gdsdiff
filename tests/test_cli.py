@@ -3,11 +3,20 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from importlib.metadata import version
 
 import gdstk
 import pytest
 
 from gdsdiff.native import discover_native_capabilities
+
+
+def test_cli_version_matches_distribution():
+    completed = subprocess.run(
+        [sys.executable, "-m", "gdsdiff", "--version"], check=False, text=True, capture_output=True
+    )
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == f"gdsdiff {version('gdsdiff')}"
 
 
 def _write_pair(tmp_path):

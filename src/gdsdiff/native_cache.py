@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
 import os
 import platform
+import shutil
+import subprocess
 import sys
 import time
 import uuid
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
@@ -29,7 +33,7 @@ def content_addressed_library_path(
 
     source_paths = tuple(Path(source) for source in sources)
     digest = hashlib.sha256(b"gdsdiff-native-cache-v1\0")
-    for item in build_key:
+    for item in native_build_fingerprint(tuple(build_key)):
         digest.update(str(item).encode("utf-8"))
         digest.update(b"\0")
     for source in source_paths:
@@ -57,7 +61,7 @@ def ensure_cached_native_library(
     path = content_addressed_library_path(filename, sources=source_paths, build_key=build_key)
     if path.is_file():
         return path
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_cache_directory(path.parent)
     lock_path = path.with_name(f".{path.name}.lock")
     with _exclusive_cache_lock(lock_path):
         if path.is_file():
@@ -88,6 +92,125 @@ def native_cache_dir() -> Path:
         base = Path(root).expanduser() if root else Path.home() / ".cache"
         base = base / "gdsdiff" / "native"
     return base / _platform_tag()
+
+
+def native_build_fingerprint(build_key: tuple[str, ...]) -> tuple[str, ...]:
+    """Augment a native build contract with compiler and device identity."""
+
+    if not build_key:
+        return build_key
+    compiler = build_key[0]
+    fingerprint = (*build_key, *_executable_fingerprint(compiler, os.environ.get("PATH")))
+    if Path(compiler).name.lower().startswith("nvcc") and "-arch=native" in build_key:
+        fingerprint = (*fingerprint, *_cuda_device_fingerprint(os.environ.get("CUDA_VISIBLE_DEVICES")))
+    return fingerprint
+
+
+@lru_cache(maxsize=32)
+def _executable_fingerprint(command: str, path: str | None) -> tuple[str, ...]:
+    resolved = shutil.which(command, path=path)
+    if resolved is None:
+        return (f"compiler={command}", "compiler_resolved=unavailable")
+    executable = Path(resolved).resolve()
+    try:
+        stat = executable.stat()
+        identity = f"{stat.st_size}:{stat.st_mtime_ns}"
+    except OSError:
+        identity = "stat-unavailable"
+    try:
+        completed = subprocess.run(
+            [str(executable), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        version = (completed.stdout or completed.stderr).strip()
+    except (OSError, subprocess.SubprocessError):
+        version = "version-unavailable"
+    return (
+        f"compiler={command}",
+        f"compiler_resolved={executable}",
+        f"compiler_identity={identity}",
+        f"compiler_version={version}",
+    )
+
+
+@lru_cache(maxsize=8)
+def _cuda_device_fingerprint(visible_devices: str | None) -> tuple[str, ...]:
+    driver_devices = _cuda_driver_api_fingerprint()
+    if driver_devices is not None:
+        return (f"CUDA_VISIBLE_DEVICES={visible_devices or ''}", f"cuda_driver_devices={driver_devices}")
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid,name,compute_cap,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        devices = completed.stdout.strip() if completed.returncode == 0 else "unavailable"
+    except (OSError, subprocess.SubprocessError):
+        devices = "unavailable"
+    return (f"CUDA_VISIBLE_DEVICES={visible_devices or ''}", f"cuda_devices={devices}")
+
+
+def _cuda_driver_api_fingerprint() -> str | None:
+    """Read visible device identity without creating a CUDA context."""
+
+    try:
+        driver = ctypes.CDLL("libcuda.so.1")
+        driver.cuInit.argtypes = [ctypes.c_uint]
+        driver.cuInit.restype = ctypes.c_int
+        driver.cuDeviceGetCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        driver.cuDeviceGetCount.restype = ctypes.c_int
+        driver.cuDeviceGet.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+        driver.cuDeviceGet.restype = ctypes.c_int
+        driver.cuDeviceComputeCapability.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+        driver.cuDeviceComputeCapability.restype = ctypes.c_int
+        driver.cuDeviceGetName.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        driver.cuDeviceGetName.restype = ctypes.c_int
+        driver.cuDriverGetVersion.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        driver.cuDriverGetVersion.restype = ctypes.c_int
+        if driver.cuInit(0) != 0:
+            return None
+        count = ctypes.c_int()
+        version = ctypes.c_int()
+        if driver.cuDeviceGetCount(ctypes.byref(count)) != 0 or driver.cuDriverGetVersion(ctypes.byref(version)) != 0:
+            return None
+        devices = []
+        for ordinal in range(count.value):
+            device = ctypes.c_int()
+            major = ctypes.c_int()
+            minor = ctypes.c_int()
+            name = ctypes.create_string_buffer(256)
+            if driver.cuDeviceGet(ctypes.byref(device), ordinal) != 0:
+                return None
+            if driver.cuDeviceComputeCapability(ctypes.byref(major), ctypes.byref(minor), device.value) != 0:
+                return None
+            if driver.cuDeviceGetName(name, len(name), device.value) != 0:
+                return None
+            devices.append(f"{ordinal}:{name.value.decode('utf-8', errors='replace')}:sm_{major.value}{minor.value}")
+        return f"driver_api={version.value};" + ";".join(devices)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _ensure_private_cache_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "nt":
+        return
+    if path.is_symlink():
+        raise PermissionError(f"native cache directory must not be a symbolic link: {path}")
+    stat = path.stat()
+    if hasattr(os, "getuid") and stat.st_uid != os.getuid():
+        raise PermissionError(f"native cache directory is not owned by the current user: {path}")
+    if stat.st_mode & 0o077:
+        path.chmod(stat.st_mode & ~0o077)
 
 
 def _platform_tag() -> str:

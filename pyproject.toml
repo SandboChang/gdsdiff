@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gdsdiff"
-version = "0.1.0.dev0"
+version = "0.1.0rc1"
 description = "Exact, evidence-oriented comparison of GDSII layout geometry"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["GDSII", "CAD", "layout", "geometry", "verification"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
@@ -37,11 +37,13 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+  "jsonschema>=4.23",
   "pytest>=8",
   "tomli; python_version < '3.11'",
 ]
 dev = [
   "build>=1.2",
+  "jsonschema>=4.23",
   "pytest>=8",
   "tomli; python_version < '3.11'",
   "twine>=5",
@@ -54,6 +56,7 @@ native-dev = [
 [project.scripts]
 gdsdiff = "gdsdiff.cli:main"
 gdsdiff-diagnostics = "gdsdiff.diagnostics:main"
+gdsdiff-prepare-cuda = "gdsdiff.cuda_setup:main"
 
 [project.urls]
 Homepage = "https://github.com/SandboChang/gdsdiff"
@@ -75,3 +78,14 @@ gdsdiff = [
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+
+[tool.uv]
+required-version = "==0.11.29"
+
+[dependency-groups]
+dev = [
+  "build>=1.2",
+  "jsonschema>=4.23",
+  "pytest>=8",
+  "twine>=5",
+]

@@ -11,8 +11,8 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
   diagnostics; the Calibrator-specific profile factory moved back to `scgds`.
 - Correctness: normalized report JSON, semantic diff GDS, and CLI help exactly
   match the embedded baseline.
-- Tests: the final local WSL CPU-only suite produced 266 passes and 62
-  capability/fixture skips; the CUDA-enabled suite produced 311 passes and 17
+- Tests: the extraction baseline CPU-only suite produced 266 passes and 62
+  capability/fixture skips; the RC1 CUDA-enabled suite produced 329 passes and 17
   capability/fixture skips. Both completed with zero failures or warnings.
   Peak test-process RSS in the extraction parity run was 158,440 KiB.
 - Hosted portability: GitHub Actions run `29580448672` passed the complete
@@ -39,6 +39,15 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
   wheel contains the report schema, `py.typed`, CUDA/Metal/native sources, and
   no tests or `scgds` package. A clean wheel-only environment passed
   `pip check`, imports, module CLI, and diagnostics outside the source tree.
+- RC1 publication rehearsal: clean `/tmp` snapshots produced wheel and sdist;
+  both rebuilt and installed outside the source tree with `uv`, and the wheels
+  also installed with ordinary `pip`. Packaged schema validation, CLI exit
+  codes, dependency checks, explicit cold/warm CUDA preparation, CPU/CUDA exact
+  parity, and invalid-architecture atomic failure all passed from installed
+  artifacts.
+- Cache hardening: geometry and pair caches use non-executable JSON/NumPy
+  serialization and ignore legacy pickle entries. Native keys include resolved
+  compiler/toolkit and native GPU identity, with private POSIX cache permissions.
 - Optional hardware: CUDA is locally qualified. Metal simulation coverage
   passes. Hosted macOS exercised Metal when the runner exposed a stable runtime
   and used a narrowly classified capability skip when that optional runtime

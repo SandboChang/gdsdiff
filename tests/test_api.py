@@ -519,6 +519,16 @@ def test_forced_geometry_can_reuse_cached_preprocessing(tmp_path, monkeypatch):
     assert second_payload["timings"]["new_geometry_cache_hit"] is True
     assert second_payload["timings"]["extract_s"] == 0.0
     assert second_payload["exact_fallback"]["mode"] == "windowed"
+    assert tuple(cache_dir.glob("*.json"))
+    assert tuple(cache_dir.glob("*.npz"))
+    assert not tuple(cache_dir.rglob("*.pkl"))
+
+    next(cache_dir.glob("*.npz")).write_bytes(b"corrupt")
+    rebuilt = compare_gds_files(config, use_fast_shortcuts=False).report.to_json_dict()
+    assert not (
+        rebuilt["timings"]["old_geometry_cache_hit"]
+        and rebuilt["timings"]["new_geometry_cache_hit"]
+    )
 
 
 def test_gpu_polygon_can_reuse_native_polygon_cache(tmp_path):

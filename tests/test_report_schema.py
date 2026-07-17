@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from importlib.resources import files
 
+import jsonschema
 import pytest
 
 from gdsdiff import (
@@ -49,6 +51,21 @@ def test_equivalent_report_validates_and_serializes():
     assert payload["exit_code_category"] == 0
     assert payload["exact_verification_complete"] is True
     validate_report_dict(payload)
+    _validate_packaged_schema(payload)
+
+
+def _validate_packaged_schema(payload):
+    schema = json.loads(
+        files("gdsdiff").joinpath("schemas/gdsdiff_report-v1.schema.json").read_text(encoding="utf-8")
+    )
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(payload, schema)
+
+
+@pytest.mark.parametrize("status", tuple(CompareStatus))
+def test_packaged_schema_accepts_every_public_status(status):
+    payload = _base_report(status=status, exact_verification_complete=False).to_json_dict()
+    _validate_packaged_schema(payload)
 
 
 def test_expected_only_exit_code_depends_on_failure_policy():

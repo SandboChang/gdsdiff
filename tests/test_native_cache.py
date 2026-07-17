@@ -27,6 +27,29 @@ def test_content_address_changes_library_path(monkeypatch, tmp_path):
     assert first.suffix == second.suffix == ".so"
 
 
+def test_compiler_identity_changes_library_path(monkeypatch, tmp_path):
+    monkeypatch.setenv(ENV_NATIVE_CACHE_DIR, str(tmp_path / "cache"))
+    source = tmp_path / "source.cpp"
+    source.write_text("source", encoding="utf-8")
+    monkeypatch.setattr(native_cache, "_executable_fingerprint", lambda command, path: ("compiler=one",))
+    first = content_addressed_library_path("probe.so", sources=(source,), build_key=("g++", "-O3"))
+    monkeypatch.setattr(native_cache, "_executable_fingerprint", lambda command, path: ("compiler=two",))
+    second = content_addressed_library_path("probe.so", sources=(source,), build_key=("g++", "-O3"))
+    assert first != second
+
+
+def test_native_cuda_device_changes_library_path(monkeypatch, tmp_path):
+    monkeypatch.setenv(ENV_NATIVE_CACHE_DIR, str(tmp_path / "cache"))
+    source = tmp_path / "source.cu"
+    source.write_text("source", encoding="utf-8")
+    monkeypatch.setattr(native_cache, "_executable_fingerprint", lambda command, path: ("nvcc=13.3",))
+    monkeypatch.setattr(native_cache, "_cuda_device_fingerprint", lambda visible: ("device=sm_120",))
+    first = content_addressed_library_path("probe.so", sources=(source,), build_key=("nvcc", "-arch=native"))
+    monkeypatch.setattr(native_cache, "_cuda_device_fingerprint", lambda visible: ("device=sm_100",))
+    second = content_addressed_library_path("probe.so", sources=(source,), build_key=("nvcc", "-arch=native"))
+    assert first != second
+
+
 def test_concurrent_cache_build_publishes_one_complete_library(monkeypatch, tmp_path):
     monkeypatch.setenv(ENV_NATIVE_CACHE_DIR, str(tmp_path / "cache"))
     source = tmp_path / "source.cpp"
@@ -56,6 +79,8 @@ def test_concurrent_cache_build_publishes_one_complete_library(monkeypatch, tmp_
     assert paths[0].read_bytes() == b"complete-library"
     assert build_count == 1
     assert not tuple(paths[0].parent.glob(".*.lock"))
+    if native_cache.os.name != "nt":
+        assert paths[0].parent.stat().st_mode & 0o077 == 0
 
 
 def test_failed_build_does_not_publish_partial_library(monkeypatch, tmp_path):

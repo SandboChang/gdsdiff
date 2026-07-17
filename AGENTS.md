@@ -12,6 +12,9 @@ artifacts, acceleration, or agent-facing diff workflows.
   `.venv_mac/bin/python` on macOS, and `.venv/bin/python` on native Linux.
 - Do not use the base system Python for imports, builds, or tests.
 - CPU behavior must remain usable without CUDA, Metal, CMake, or a compiler.
+- Use the exact `uv` version required by `pyproject.toml`. On WSL under
+  `/mnt/f`, set `UV_PROJECT_ENVIRONMENT=.venv_wsl`, `UV_LINK_MODE=copy`, and
+  `TMPDIR=/tmp` for pytest. Use `.venv_mac` on macOS and `.venv` on Linux.
 
 ## Development Rules
 
