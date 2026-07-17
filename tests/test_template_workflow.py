@@ -6,8 +6,8 @@ from pathlib import Path
 
 import gdstk
 
-from scgds.gdsdiff import extract_gds_polygons, run_full_exact_oracle
-from scgds.gdsdiff.templates import extract_template, find_template
+from gdsdiff import extract_gds_polygons, run_full_exact_oracle
+from gdsdiff.templates import extract_template, find_template
 
 
 def _rect(x0, y0, x1, y1, *, layer=1, datatype=0):

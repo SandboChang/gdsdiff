@@ -12,7 +12,7 @@ available.
 Run the package CLI from the repository root:
 
 ```bash
-.venv/bin/python -m scgds.gdsdiff before.gds after.gds --top TOP --output-dir /tmp/gdsdiff_chip2
+.venv/bin/python -m gdsdiff before.gds after.gds --top TOP --output-dir /tmp/gdsdiff_chip2
 ```
 
 `--output-dir` writes the standard artifact set: `report.json`,
@@ -58,7 +58,7 @@ Allowed policy directions are `addition`, `removal`, `both`, and `xor`.
 
 ## Workflow Wrapper
 
-For agent/CI validation around generated project outputs, a wrapper exists:
+The consuming `scgds` repository provides a project-output workflow wrapper:
 
 ```bash
 .venv/bin/python -m scgds.tools.run_gds_geometry_check path/to/output.gds --artifacts-dir outputs/gds_check --rebuild-command ".venv/bin/python path/to/stage.py" --top TOP
@@ -83,7 +83,7 @@ from the standard exact-diff reporter.
 Run the benchmark harness with:
 
 ```bash
-.venv/bin/python benchmarks/gdsdiff/run_benchmarks.py --max-pairs 1 --mode windowed --tile-size 256 --output /tmp/gdsdiff_benchmark_smoke.json
+.venv/bin/python benchmarks/gdsdiff/run_benchmarks.py --pair smoke:before.gds:after.gds --mode windowed --tile-size 256 --output /tmp/gdsdiff_benchmark_smoke.json
 ```
 
 Benchmark rows include wall-clock time plus comparator extraction/exact/total

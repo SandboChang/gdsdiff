@@ -10,7 +10,7 @@ import pytest
 def test_cuda_byte_compare_detects_equal_size_content_change(tmp_path):
     if shutil.which("nvcc") is None:
         pytest.skip("nvcc is not available")
-    from scgds.gdsdiff.backends.cuda_ctypes import compare_files_cuda
+    from gdsdiff.backends.cuda_ctypes import compare_files_cuda
 
     old_path = tmp_path / "old.bin"
     new_path = tmp_path / "new.bin"
@@ -32,8 +32,8 @@ def test_cuda_candidate_compaction_matches_cpu_prefilter(tmp_path):
     nvcc = shutil.which("nvcc")
     if nvcc is None:
         pytest.skip("nvcc is not available")
-    repo = Path(__file__).resolve().parents[3]
-    source_dir = repo / "scgds" / "gdsdiff" / "native_src" / "gdsdiff"
+    repo = Path(__file__).resolve().parents[1]
+    source_dir = repo / "src" / "gdsdiff" / "native_src" / "gdsdiff"
     binary = tmp_path / "test_cuda_candidates"
 
     compile_result = subprocess.run(

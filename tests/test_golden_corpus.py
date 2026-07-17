@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from scgds.gdsdiff import LayerSpec, extract_gds_polygons, format_twice_area, run_full_exact_oracle
+from gdsdiff import LayerSpec, extract_gds_polygons, format_twice_area, run_full_exact_oracle
 
 from .fixtures import fixture_cases, write_fixture_pair
 

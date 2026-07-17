@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 
-ENV_NATIVE_CACHE_DIR = "SCGDS_NATIVE_CACHE_DIR"
+ENV_NATIVE_CACHE_DIR = "GDSDIFF_NATIVE_CACHE_DIR"
+LEGACY_ENV_NATIVE_CACHE_DIR = "SCGDS_NATIVE_CACHE_DIR"
 
 
 def cached_native_library_path(filename: str) -> Path:
@@ -14,19 +15,19 @@ def cached_native_library_path(filename: str) -> Path:
 
 
 def native_cache_dir() -> Path:
-    configured = os.environ.get(ENV_NATIVE_CACHE_DIR)
+    configured = os.environ.get(ENV_NATIVE_CACHE_DIR) or os.environ.get(LEGACY_ENV_NATIVE_CACHE_DIR)
     if configured:
         base = Path(configured).expanduser()
     elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches" / "scgds" / "gdsdiff" / "native"
+        base = Path.home() / "Library" / "Caches" / "gdsdiff" / "native"
     elif os.name == "nt":
         root = os.environ.get("LOCALAPPDATA")
         base = Path(root).expanduser() if root else Path.home() / "AppData" / "Local"
-        base = base / "scgds" / "gdsdiff" / "native"
+        base = base / "gdsdiff" / "native"
     else:
         root = os.environ.get("XDG_CACHE_HOME")
         base = Path(root).expanduser() if root else Path.home() / ".cache"
-        base = base / "scgds" / "gdsdiff" / "native"
+        base = base / "gdsdiff" / "native"
     return base / _platform_tag()
 
 

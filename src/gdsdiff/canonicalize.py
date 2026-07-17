@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ._environment import get_environment
 from .geometry import PolygonBuffer
 from .multiprocessing_support import fork_context
 
@@ -102,7 +103,14 @@ def _resolve_worker_count(polygon_count: int) -> int:
 
 def _parallel_min_polygons() -> int:
     try:
-        value = int(os.environ.get("GDS_GPU_COMPARE_PARALLEL_MIN_POLYGONS", ""))
+        value = int(
+            get_environment(
+                "GDSDIFF_PARALLEL_MIN_POLYGONS",
+                "GDS_GPU_COMPARE_PARALLEL_MIN_POLYGONS",
+                "",
+            )
+            or ""
+        )
     except ValueError:
         return 30_000
     return value if value > 0 else 30_000

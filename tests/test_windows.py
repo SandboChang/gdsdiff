@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from scgds.gdsdiff import (
+from gdsdiff import (
     CpuTilePrefilterResult,
     LayerSpec,
     OversizedPolygon,
@@ -12,7 +12,7 @@ from scgds.gdsdiff import (
     WindowConfig,
     build_candidate_windows,
 )
-from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

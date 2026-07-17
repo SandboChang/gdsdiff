@@ -11,8 +11,8 @@ def test_cuda_assignment_kernels_match_cpu_reference(tmp_path):
     nvcc = shutil.which("nvcc")
     if nvcc is None:
         pytest.skip("nvcc is not available")
-    repo = Path(__file__).resolve().parents[3]
-    source_dir = repo / "scgds" / "gdsdiff" / "native_src" / "gdsdiff"
+    repo = Path(__file__).resolve().parents[1]
+    source_dir = repo / "src" / "gdsdiff" / "native_src" / "gdsdiff"
     binary = tmp_path / "test_cuda_assignment"
 
     compile_result = subprocess.run(

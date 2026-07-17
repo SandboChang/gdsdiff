@@ -146,6 +146,37 @@ class AllowedRegion:
         }
 
 
+def parse_allowed_region(value: str) -> AllowedRegion:
+    """Parse ``L:D,DIRECTION,X0,Y0,X1,Y1[,HALO]`` into an allowance."""
+
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) not in {6, 7}:
+        raise ValueError("allowed region must have form L:D,DIRECTION,X0,Y0,X1,Y1[,HALO]")
+    layer = LayerSpec.parse(parts[0])
+    direction = DifferenceDirection.coerce(parts[1])
+    x0, y0, x1, y1 = (int(part) for part in parts[2:6])
+    halo = int(parts[6]) if len(parts) == 7 else 0
+    return AllowedRegion(
+        layers=(layer,),
+        direction=direction,
+        bbox=(x0, y0, x1, y1),
+        halo_dbu=halo,
+    )
+
+
+def parse_allowed_whole_layer(value: str) -> AllowedRegion:
+    """Parse ``L:D,DIRECTION`` into a whole-layer allowance."""
+
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        raise ValueError("whole-layer allowance must have form L:D,DIRECTION")
+    return AllowedRegion(
+        layers=(LayerSpec.parse(parts[0]),),
+        direction=DifferenceDirection.coerce(parts[1]),
+        whole_layer=True,
+    )
+
+
 @dataclass(frozen=True)
 class CompareConfig:
     old_path: Path | str

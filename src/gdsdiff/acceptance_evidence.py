@@ -430,6 +430,8 @@ def _all_cores_ge_50_seen(summary: dict[str, Any]) -> bool:
 @contextmanager
 def _forced_multicore_thresholds():
     names = (
+        "GDSDIFF_PARALLEL_MIN_POLYGONS",
+        "GDSDIFF_PARALLEL_EXTRACT_PAIR_MIN_BYTES",
         "GDS_GPU_COMPARE_PARALLEL_MIN_POLYGONS",
         "GDS_GPU_COMPARE_PARALLEL_EXTRACT_PAIR_MIN_BYTES",
     )

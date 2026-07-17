@@ -4,7 +4,7 @@ import gdstk
 import numpy as np
 import pytest
 
-from scgds.gdsdiff.backends.cuda_ctypes import (
+from gdsdiff.backends.cuda_ctypes import (
     CudaCtypesUnavailable,
     cuda_ctypes_available,
     run_cuda_axis_aligned_boundary_edges_from_fragments,
@@ -18,22 +18,22 @@ from scgds.gdsdiff.backends.cuda_ctypes import (
     run_cuda_polygon_record_delta,
     run_cuda_split_free_boundary_edges_from_fragments,
 )
-from scgds.gdsdiff.backends.boundary_loop_ctypes import (
+from gdsdiff.backends.boundary_loop_ctypes import (
     boundary_loop_ctypes_available,
     native_boundary_edges_from_fragments,
     native_boundary_loops_from_edges,
 )
-from scgds.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
-from scgds.gdsdiff.config import LayerSpec
-from scgds.gdsdiff.exact_oracle import DiffFragment
-from scgds.gdsdiff.geometry import polygon_bbox, polygon_twice_area
-from scgds.gdsdiff import polygon_components as pc
-from scgds.gdsdiff.polygon_components import (
+from gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
+from gdsdiff.config import LayerSpec
+from gdsdiff.exact_oracle import DiffFragment
+from gdsdiff.geometry import polygon_bbox, polygon_twice_area
+from gdsdiff import polygon_components as pc
+from gdsdiff.polygon_components import (
     add_overlapping_context_to_components,
     build_record_delta_surplus_components,
     exact_result_from_component_quads,
 )
-from scgds.gdsdiff.source_edge_diff import (
+from gdsdiff.source_edge_diff import (
     _boundary_edges_for_direction,
     _boundary_edges_for_one_sided_union,
     _build_segments,

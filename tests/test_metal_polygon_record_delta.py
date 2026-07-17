@@ -4,7 +4,7 @@ import gdstk
 import numpy as np
 import pytest
 
-from scgds.gdsdiff.backends.metal_ctypes import (
+from gdsdiff.backends.metal_ctypes import (
     MetalCtypesUnavailable,
     compare_files_metal,
     metal_ctypes_available,
@@ -15,11 +15,11 @@ from scgds.gdsdiff.backends.metal_ctypes import (
     run_metal_one_sided_boundary_edges,
     run_metal_polygon_record_delta_from_hashes,
 )
-from scgds.gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
-from scgds.gdsdiff.config import LayerSpec
-from scgds.gdsdiff.exact_oracle import DiffFragment
-from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer, polygon_bbox, polygon_twice_area
-from scgds.gdsdiff.source_edge_diff import (
+from gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native
+from gdsdiff.config import LayerSpec
+from gdsdiff.exact_oracle import DiffFragment
+from gdsdiff.geometry import LayerTable, PolygonBuffer, polygon_bbox, polygon_twice_area
+from gdsdiff.source_edge_diff import (
     _SegmentRecord,
     _boundary_edges_for_direction,
     _boundary_edges_for_one_sided_union,
@@ -32,8 +32,8 @@ from scgds.gdsdiff.source_edge_diff import (
     _segment_splits,
     _signed_twice_area,
 )
-from scgds.gdsdiff import source_edge_diff as source_edges
-from scgds.gdsdiff.tiling import TileConfig, run_cpu_tile_prefilter
+from gdsdiff import source_edge_diff as source_edges
+from gdsdiff.tiling import TileConfig, run_cpu_tile_prefilter
 
 
 def _rect(x0, y0, x1, y1):

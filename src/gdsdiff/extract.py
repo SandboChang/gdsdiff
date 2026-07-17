@@ -10,6 +10,7 @@ from typing import Iterable
 import numpy as np
 
 from .config import LayerSpec, parse_layer_selector
+from ._environment import get_environment
 from .gds_metadata import decimal_from_number
 from .geometry import LayerTable, PolygonBuffer, normalize_polygon_points, polygon_bbox, polygon_flags
 from .grid import DEFAULT_COORDINATE_SAFETY_LIMIT, snap_to_grid
@@ -172,7 +173,7 @@ def _extract_polygon_records(
 
 
 def _fast_integer_snap_scale(unit: Decimal, grid: Decimal) -> int | None:
-    if os.environ.get("GDS_GPU_COMPARE_EXTRACT_DECIMAL") == "1":
+    if get_environment("GDSDIFF_EXTRACT_DECIMAL", "GDS_GPU_COMPARE_EXTRACT_DECIMAL") == "1":
         return None
     try:
         ratio = Fraction(unit) / Fraction(grid)
@@ -293,7 +294,14 @@ def _resolve_extract_worker_count(raw_polygon_count: int) -> int:
 
 def _parallel_min_polygons() -> int:
     try:
-        value = int(os.environ.get("GDS_GPU_COMPARE_PARALLEL_MIN_POLYGONS", ""))
+        value = int(
+            get_environment(
+                "GDSDIFF_PARALLEL_MIN_POLYGONS",
+                "GDS_GPU_COMPARE_PARALLEL_MIN_POLYGONS",
+                "",
+            )
+            or ""
+        )
     except ValueError:
         return 30_000
     return value if value > 0 else 30_000

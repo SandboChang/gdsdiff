@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -128,34 +127,6 @@ def check_assembly_profile(profile: AssemblyProfile) -> ProfileResult:
 
 def combined_profile_summary(geometry: CompareRunResult | None = None, assembly: ProfileResult | None = None) -> CombinedProfileSummary:
     return CombinedProfileSummary(geometry=geometry, assembly=assembly)
-
-
-def calibrator_model1_profile(project_dir: str | Path | None = None) -> AssemblyProfile:
-    config = importlib.import_module("projects.Calibrator.designs.model1.config")
-    wafer = importlib.import_module("projects.Calibrator.designs.model1.wafer")
-    project_path = Path(project_dir) if project_dir is not None else Path(config.project_dir)
-    placements = wafer.auto_chip_placements()
-    output_dir = Path(config.resolved_output_dir)
-    if project_dir is not None:
-        output_dir = project_path / "outputs"
-    wafer_path = config.output_path("wafer", output_dir)
-    manifest_path = config.output_path("manifest", output_dir)
-    expected_files = (wafer_path, manifest_path, output_dir / "chips")
-    expected_layers = (
-        (config.ld_laserGuide_general["layer"], config.ld_laserGuide_general["datatype"]),
-        (config.ld_wafer["layer"], config.ld_wafer["datatype"]),
-    )
-    return AssemblyProfile(
-        name="Calibrator model1 wafer",
-        gds_path=wafer_path,
-        expected_top=config.wafer_cell_name,
-        expected_reference_count=len(placements),
-        expected_layers=expected_layers,
-        expected_files=expected_files,
-        manifest_path=manifest_path,
-        manifest_required_columns=("chip_ix", "chip_iy", "chip_label", "wafer_x_um", "wafer_y_um", "area_scale", "linear_scale"),
-        manifest_expected_rows=len(placements),
-    )
 
 
 def _resolve_top(tops: list[gdstk.Cell], expected_top: str | None) -> gdstk.Cell | None:

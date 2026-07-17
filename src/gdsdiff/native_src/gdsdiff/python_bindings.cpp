@@ -5,7 +5,7 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(_gds_compare_core, m) {
-    m.doc() = "Optional native core helpers for scgds.gdsdiff";
+    m.doc() = "Optional native core helpers for gdsdiff";
     m.def("floor_div", &gdsdiff::floor_div, py::arg("value"), py::arg("divisor"));
     m.def(
         "bbox_tile_range",

@@ -5,10 +5,10 @@ from pathlib import Path
 
 import gdstk
 import numpy as np
-import scgds.gdsdiff.api as api_module
+import gdsdiff.api as api_module
 import pytest
 
-from scgds.gdsdiff import (
+from gdsdiff import (
     AllowedRegion,
     CompareConfig,
     CompareStatus,
@@ -16,9 +16,9 @@ from scgds.gdsdiff import (
     FailurePolicy,
     compare_gds_files,
 )
-from scgds.gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
-from scgds.gdsdiff.config import LayerSpec
-from scgds.gdsdiff.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
+from gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
+from gdsdiff.config import LayerSpec
+from gdsdiff.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
 
 
 def _write_pair(tmp_path, *, shifted=True):
@@ -139,7 +139,7 @@ def test_cpu_audit_summary_normalizes_collinear_loop_vertices():
 def test_gpu_polygon_metal_source_edge_report_contract(tmp_path, monkeypatch):
     old_path, new_path = _write_pair(tmp_path)
     exact_diff_path = tmp_path / "exact_diff.md"
-    import scgds.gdsdiff.backends.metal_ctypes as metal_ctypes
+    import gdsdiff.backends.metal_ctypes as metal_ctypes
 
     monkeypatch.setattr(
         api_module,

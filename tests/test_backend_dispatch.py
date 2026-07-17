@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 import gdstk
 
-from scgds.gdsdiff import api as api_module
-from scgds.gdsdiff import Backend, CompareConfig, CompareStatus, compare_gds_files
-from scgds.gdsdiff.backends.identity import compare_file_identity_accelerated
-from scgds.gdsdiff.native import NativeCapabilities, discover_native_capabilities
+from gdsdiff import api as api_module
+from gdsdiff import Backend, CompareConfig, CompareStatus, compare_gds_files
+from gdsdiff.backends.identity import compare_file_identity_accelerated
+from gdsdiff.native import NativeCapabilities, discover_native_capabilities
 
 
 def _write_pair(tmp_path, *, shifted=True):

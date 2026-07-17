@@ -6,8 +6,8 @@ from pathlib import Path
 import gdstk
 import pytest
 
-from scgds.gdsdiff import CompareConfig, compare_gds_files
-from scgds.gdsdiff.synthetic_suite import (
+from gdsdiff import CompareConfig, compare_gds_files
+from gdsdiff.synthetic_suite import (
     ADVERSARIAL_SYNTHETIC_CASES,
     BASE_SYNTHETIC_CASES,
     SYNTHETIC_CASES,
@@ -126,7 +126,7 @@ def test_synthetic_adversarial_cases_match_metal_with_cpu_audit_when_available(t
 
 def _metal_available() -> bool:
     try:
-        from scgds.gdsdiff.backends.metal_ctypes import metal_ctypes_available
+        from gdsdiff.backends.metal_ctypes import metal_ctypes_available
 
         return metal_ctypes_available()
     except Exception:

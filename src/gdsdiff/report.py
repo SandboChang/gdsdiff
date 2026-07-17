@@ -8,12 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import LayerSpec
+from ._version import __version__
 from .exact_oracle import ExactOracleResult, format_twice_area
 from .policy import PolicyClassificationResult
 from .semantics import CompareStatus, FailurePolicy, exit_code_for_status
 
 REPORT_SCHEMA_VERSION = "gdsdiff-report-v1"
-TOOL_VERSION = "0.1.0-dev"
+TOOL_VERSION = __version__
 
 
 def _area_string(value: int | str) -> str:

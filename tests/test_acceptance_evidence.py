@@ -5,7 +5,7 @@ import os
 
 import gdstk
 
-from scgds.gdsdiff.acceptance_evidence import (
+from gdsdiff.acceptance_evidence import (
     AcceptanceCorpusPair,
     SCHEMA_VERSION,
     _busy_percent,
@@ -88,6 +88,8 @@ def test_acceptance_evidence_can_monitor_cpu(tmp_path):
         assert "logical_cpu_count" in monitor or monitor["sample_count"] == 0
     assert os.environ.get("GDS_GPU_COMPARE_PARALLEL_MIN_POLYGONS") is None
     assert os.environ.get("GDS_GPU_COMPARE_PARALLEL_EXTRACT_PAIR_MIN_BYTES") is None
+    assert os.environ.get("GDSDIFF_PARALLEL_MIN_POLYGONS") is None
+    assert os.environ.get("GDSDIFF_PARALLEL_EXTRACT_PAIR_MIN_BYTES") is None
 
 
 def test_busy_percent_from_proc_stat_deltas():

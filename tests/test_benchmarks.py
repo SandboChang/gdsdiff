@@ -7,7 +7,7 @@ from pathlib import Path
 import gdstk
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_PATH = ROOT / "benchmarks" / "gdsdiff" / "run_benchmarks.py"
 SPEC = importlib.util.spec_from_file_location("run_gds_benchmarks", BENCHMARK_PATH)
 benchmarks = importlib.util.module_from_spec(SPEC)

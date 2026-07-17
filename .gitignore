@@ -1,0 +1,24 @@
+# Virtual environments
+.venv/
+.venv_mac/
+.venv_wsl/
+
+# Python/build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Local workflow artifacts
+.tmp/
+results/
+.dump/
+*.gds
+*.oas
+
+# Editors and OS metadata
+.DS_Store
+.idea/
+.vscode/

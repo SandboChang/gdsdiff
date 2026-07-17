@@ -6,13 +6,13 @@ from pathlib import Path
 import gdstk
 import pytest
 
-from scgds.gdsdiff.backends.polygon_extract_ctypes import (
+from gdsdiff.backends.polygon_extract_ctypes import (
     PolygonExtractCtypesUnavailable,
     extract_gds_polygons_native,
 )
-from scgds.gdsdiff.config import LayerSpec
-from scgds.gdsdiff.extract import extract_gds_polygons
-from scgds.gdsdiff.geometry import FLAG_FEWER_THAN_THREE_POINTS, FLAG_ZERO_AREA
+from gdsdiff.config import LayerSpec
+from gdsdiff.extract import extract_gds_polygons
+from gdsdiff.geometry import FLAG_FEWER_THAN_THREE_POINTS, FLAG_ZERO_AREA
 
 
 def _polygon_records(extraction):

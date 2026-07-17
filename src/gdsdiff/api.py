@@ -16,6 +16,7 @@ from .cache import (
     load_or_build_cached_native_polygons,
     write_cached_pair_verdict,
 )
+from ._environment import get_environment
 from .canonicalize import intern_polygons
 from .config import CompareConfig, LayerSpec
 from .backends.exact import CudaManhattanRectExactComponentBackend, GdstkExactComponentBackend, ManhattanRectExactComponentBackend
@@ -615,12 +616,17 @@ def _should_extract_pair_in_parallel(config: CompareConfig) -> bool:
 
 
 def _parallel_extract_pair_min_bytes() -> int:
-    return _positive_int_env("GDS_GPU_COMPARE_PARALLEL_EXTRACT_PAIR_MIN_BYTES", 1_000_000)
+    value = get_environment(
+        "GDSDIFF_PARALLEL_EXTRACT_PAIR_MIN_BYTES",
+        "GDS_GPU_COMPARE_PARALLEL_EXTRACT_PAIR_MIN_BYTES",
+        "",
+    )
+    return _positive_int_value(value, 1_000_000)
 
 
-def _positive_int_env(name: str, default: int) -> int:
+def _positive_int_value(raw: str | None, default: int) -> int:
     try:
-        value = int(os.environ.get(name, ""))
+        value = int(raw or "")
     except ValueError:
         return default
     return value if value > 0 else default

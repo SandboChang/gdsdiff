@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from scgds.gdsdiff import (
+from gdsdiff import (
     AllowedRegion,
     Backend,
     CompareConfig,
@@ -15,6 +15,8 @@ from scgds.gdsdiff import (
     LayerSpec,
     PathPolicy,
     parse_layer_selector,
+    parse_allowed_region,
+    parse_allowed_whole_layer,
 )
 
 
@@ -131,6 +133,19 @@ def test_allowed_region_requires_bbox_or_explicit_whole_layer():
 
     with pytest.raises(ValueError, match="x0 < x1"):
         AllowedRegion(layers=(LayerSpec(1, 0),), bbox=(0, 0, 0, 1))
+
+
+def test_public_allowed_region_parsers_match_cli_contract():
+    region = parse_allowed_region("1:2,addition,0,10,20,30,2")
+    whole = parse_allowed_whole_layer("3:0,removal")
+
+    assert region == AllowedRegion(
+        layers=(LayerSpec(1, 2),),
+        direction="addition",
+        bbox=(0, 10, 20, 30),
+        halo_dbu=2,
+    )
+    assert whole == AllowedRegion(layers=(LayerSpec(3, 0),), direction="removal", whole_layer=True)
 
 
 def test_grid_spec_uses_decimal_values_and_rounding_policy():

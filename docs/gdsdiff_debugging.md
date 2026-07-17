@@ -30,20 +30,20 @@ Common causes:
 - Run focused comparator tests:
 
 ```bash
-.venv/bin/python -m pytest -c scgds/tests/pytest.ini scgds/tests/gdsdiff
+.venv/bin/python -m pytest
 ```
 
 - Run a direct CLI smoke check:
 
 ```bash
-.venv/bin/python -m scgds.gdsdiff before.gds before.gds --top TOP --output-dir /tmp/chip2_compare
+.venv/bin/python -m gdsdiff before.gds before.gds --top TOP --output-dir /tmp/chip2_compare
 ```
 
 - Run workflow wrapper smoke checks for geometry-affecting project changes.
 - Run benchmark smoke:
 
 ```bash
-.venv/bin/python benchmarks/gdsdiff/run_benchmarks.py --max-pairs 1 --mode windowed --tile-size 256 --output /tmp/gdsdiff_benchmark_smoke.json
+.venv/bin/python benchmarks/gdsdiff/run_benchmarks.py --pair smoke:before.gds:after.gds --mode windowed --tile-size 256 --output /tmp/gdsdiff_benchmark_smoke.json
 ```
 
 - Confirm generated cache/artifact files are not accidentally committed.
@@ -54,7 +54,8 @@ Common causes:
 
 - CUDA kernels are qualified as broad-phase/native components, but Python
   production dispatch still falls back to CPU exact verification.
-- No Metal backend is implemented in this Linux/CUDA campaign.
+- Metal behavior is covered by portable tests; real acceleration requires
+  macOS on Apple Silicon with the Xcode command-line tools.
 - No GPU Boolean exact oracle is enabled. `gdstk` remains the exact authority.
 - Full-wafer flattening can be impractical; use profile/readback checks unless
   wafer-level geometry itself changed.

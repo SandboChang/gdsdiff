@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from scgds.gdsdiff import canonicalize_polygon, intern_polygons
-from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
-from scgds.gdsdiff.config import LayerSpec
+from gdsdiff import canonicalize_polygon, intern_polygons
+from gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.config import LayerSpec
 
 
 def _buffer(polygons, flags=None):

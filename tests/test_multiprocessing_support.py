@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import multiprocessing as mp
 
-from scgds.gdsdiff import multiprocessing_support
-from scgds.gdsdiff import extract as extract_module
+from gdsdiff import multiprocessing_support
+from gdsdiff import extract as extract_module
 
 
 def test_fork_context_is_absent_when_platform_has_no_fork(monkeypatch):

@@ -4,9 +4,8 @@ import csv
 
 import gdstk
 
-from scgds.gdsdiff import AssemblyProfile, CompareConfig, combined_profile_summary, compare_gds_files
-from scgds.gdsdiff.profiles import calibrator_model1_profile, check_assembly_profile
-from scgds.tests.golden_gds import ROOT
+from gdsdiff import AssemblyProfile, CompareConfig, combined_profile_summary, compare_gds_files
+from gdsdiff.profiles import check_assembly_profile
 
 
 def _write_wafer(path, *, reference_count=2, include_layer=True):
@@ -108,15 +107,3 @@ def test_combined_summary_keeps_geometry_and_assembly_status_separate(tmp_path):
     assert not summary.passed
     assert "Geometry status: equivalent" in markdown
     assert "FAIL top_reference_count" in markdown
-
-
-def test_calibrator_profile_derives_counts_and_paths_from_project_modules():
-    profile = calibrator_model1_profile()
-    config = __import__("projects.Calibrator.designs.model1.config", fromlist=["dummy"])
-    wafer = __import__("projects.Calibrator.designs.model1.wafer", fromlist=["dummy"])
-
-    assert profile.gds_path == config.output_path("wafer")
-    assert profile.manifest_path == config.output_path("manifest")
-    assert profile.expected_reference_count == len(wafer.auto_chip_placements())
-    assert profile.expected_reference_count != 0
-    assert str(ROOT) in str(profile.gds_path)

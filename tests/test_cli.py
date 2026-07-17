@@ -7,7 +7,7 @@ import sys
 import gdstk
 import pytest
 
-from scgds.gdsdiff.native import discover_native_capabilities
+from gdsdiff.native import discover_native_capabilities
 
 
 def _write_pair(tmp_path):
@@ -42,7 +42,7 @@ def test_cli_template_subcommands_produce_expected_artifacts(tmp_path):
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             "extract-template",
             str(source_path),
             "--top",
@@ -78,7 +78,7 @@ def test_cli_template_subcommands_produce_expected_artifacts(tmp_path):
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             "find-template",
             str(template_path),
             str(target_path),
@@ -116,7 +116,7 @@ def test_cli_writes_requested_artifacts_for_difference(tmp_path):
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             str(old_path),
             str(new_path),
             "--tile-size",
@@ -159,7 +159,7 @@ def test_gdsdiff_output_dir_writes_neutral_artifact_set_with_cpu_backend(tmp_pat
         [
             sys.executable,
             "-c",
-            "from scgds.gdsdiff.cli import main; raise SystemExit(main())",
+            "from gdsdiff.cli import main; raise SystemExit(main())",
             str(old_path),
             str(new_path),
             "--backend",
@@ -203,7 +203,7 @@ def test_cli_returns_one_for_unexpected_difference(tmp_path):
     old_path, new_path = _write_pair(tmp_path)
 
     completed = subprocess.run(
-        [sys.executable, "-m", "scgds.gdsdiff", str(old_path), str(new_path), "--tile-size", "10"],
+        [sys.executable, "-m", "gdsdiff", str(old_path), str(new_path), "--tile-size", "10"],
         check=False,
         text=True,
         capture_output=True,
@@ -222,7 +222,7 @@ def test_cli_exact_component_backend_reports_stats(tmp_path):
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             str(old_path),
             str(new_path),
             "--exact",
@@ -256,7 +256,7 @@ def test_cli_cuda_exact_component_backend_reports_stats_when_available(tmp_path)
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             str(old_path),
             str(new_path),
             "--exact",
@@ -292,7 +292,7 @@ def test_cli_gpu_polygon_engine_uses_exact_cuda_rect_coverage_for_rectangle_inpu
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",
@@ -349,7 +349,7 @@ def test_cli_gpu_polygon_engine_uses_source_edge_records_for_non_rectangle_witho
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",
@@ -397,7 +397,7 @@ def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",
@@ -436,7 +436,7 @@ def test_cli_gpu_polygon_engine_cpu_audit_is_explicit(tmp_path):
 
 def test_cli_returns_two_for_invalid_input(tmp_path):
     completed = subprocess.run(
-        [sys.executable, "-m", "scgds.gdsdiff", str(tmp_path / "missing.gds"), str(tmp_path / "also_missing.gds")],
+        [sys.executable, "-m", "gdsdiff", str(tmp_path / "missing.gds"), str(tmp_path / "also_missing.gds")],
         check=False,
         text=True,
         capture_output=True,
@@ -458,7 +458,7 @@ def test_cli_verify_exact_after_fast_attaches_exact_evidence_when_cuda_available
         [
             sys.executable,
             "-m",
-            "scgds.gdsdiff",
+            "gdsdiff",
             str(old_path),
             str(new_path),
             "--backend",

@@ -365,7 +365,7 @@ def _benchmark_one(record: SyntheticCaseRecord, *, mode: str) -> SyntheticBenchm
             json_report_path=json_report_path,
             exact_diff_markdown_path=exact_diff_markdown_path,
             audit_cpu_oracle=audit,
-            command=("scgds.gdsdiff.synthetic_suite", "benchmark", record.scale, record.name, mode),
+            command=("gdsdiff.synthetic_suite", "benchmark", record.scale, record.name, mode),
         )
         wall_s = time.perf_counter() - start
         payload = result.report.to_json_dict()

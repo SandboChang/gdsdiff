@@ -3,10 +3,10 @@ from __future__ import annotations
 import gdstk
 import numpy as np
 
-from scgds.gdsdiff import LayerSpec, run_full_exact_oracle
-from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer, normalize_polygon_points, polygon_bbox, polygon_flags
-from scgds.gdsdiff.hierarchy_extract import extract_hierarchy_window
-from scgds.gdsdiff.spatial import bboxes_intersect
+from gdsdiff import LayerSpec, run_full_exact_oracle
+from gdsdiff.geometry import LayerTable, PolygonBuffer, normalize_polygon_points, polygon_bbox, polygon_flags
+from gdsdiff.hierarchy_extract import extract_hierarchy_window
+from gdsdiff.spatial import bboxes_intersect
 
 
 def _rect(x0, y0, x1, y1, *, layer=1, datatype=0):

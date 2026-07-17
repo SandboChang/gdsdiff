@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from scgds.gdsdiff import windowed_exact
-from scgds.gdsdiff import (
+from gdsdiff import windowed_exact
+from gdsdiff import (
     CandidateWindow,
     LayerSpec,
     SpatialIndex,
@@ -11,7 +11,7 @@ from scgds.gdsdiff import (
     run_full_exact_oracle,
     run_windowed_exact_oracle,
 )
-from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

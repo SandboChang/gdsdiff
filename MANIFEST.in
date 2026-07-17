@@ -1,0 +1,7 @@
+include AGENTS.md CHANGELOG.md CONTRIBUTING.md PROVENANCE.md SECURITY.md
+recursive-include .github *.yml *.yaml
+recursive-include agents *.md
+recursive-include benchmarks *.md *.py
+recursive-include docs *.md
+recursive-include tests *.py
+include tests/golden/.gitkeep

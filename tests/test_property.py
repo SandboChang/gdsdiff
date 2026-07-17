@@ -5,7 +5,7 @@ from pathlib import Path
 
 import gdstk
 
-from scgds.gdsdiff import CompareConfig, compare_gds_files
+from gdsdiff import CompareConfig, compare_gds_files
 
 
 def _rect(rng: random.Random) -> tuple[int, int, int, int]:

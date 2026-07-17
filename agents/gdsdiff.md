@@ -5,8 +5,7 @@
 - Use `gdsdiff` as the durable general-purpose command for arbitrary
   before/after GDS comparisons.
 - Durable comparator APIs, backends, native sources, report builders, schemas,
-  and reusable workflow helpers belong under `scgds/gdsdiff/` or another
-  appropriate `scgds/` subpackage.
+  and reusable workflow helpers belong under `src/gdsdiff/`.
 - Root-level scripts may call the library, but must not become the canonical
   implementation.
 - The earlier GPU-comparator command name is not the active entry point.
@@ -16,11 +15,12 @@
 - During agent workflows, do not use console-script shims such as `gdsdiff` or
   `.venv/bin/gdsdiff`; they can point at stale virtual environments.
 - Use the repo-local Python module entrypoint:
-  - Windows 11 through WSL: `.venv_wsl/bin/python -m scgds.gdsdiff`
-  - macOS: `.venv_mac/bin/python -m scgds.gdsdiff`
-  - Native Linux: `.venv/bin/python -m scgds.gdsdiff`
+  - Windows 11 through WSL: `.venv_wsl/bin/python -m gdsdiff`
+  - macOS: `.venv_mac/bin/python -m gdsdiff`
+  - Native Linux: `.venv/bin/python -m gdsdiff`
 - If the matching repo-local interpreter is missing or cannot import
-  `scgds.gdsdiff`, tell the user and skip the diff check.
+  `gdsdiff`, report the environment problem before relying on comparison
+  results.
 - Do not install packages, repair shims, or create a new environment unless the
   user explicitly asks.
 

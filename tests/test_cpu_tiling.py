@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from scgds.gdsdiff import (
+from gdsdiff import (
     LayerSpec,
     TileConfig,
     TileKey,
@@ -11,8 +11,8 @@ from scgds.gdsdiff import (
     floor_div,
     run_cpu_tile_prefilter,
 )
-from scgds.gdsdiff.backends.cpu import CpuTileBackend
-from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.backends.cpu import CpuTileBackend
+from gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

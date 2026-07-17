@@ -11,8 +11,8 @@ def test_cpp_core_compiles_and_matches_reference_cases(tmp_path):
     compiler = shutil.which("g++")
     if compiler is None:
         pytest.skip("g++ is not available")
-    repo = Path(__file__).resolve().parents[3]
-    source_dir = repo / "scgds" / "gdsdiff" / "native_src" / "gdsdiff"
+    repo = Path(__file__).resolve().parents[1]
+    source_dir = repo / "src" / "gdsdiff" / "native_src" / "gdsdiff"
     binary = tmp_path / "test_core"
 
     compile_result = subprocess.run(

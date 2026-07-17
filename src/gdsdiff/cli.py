@@ -5,8 +5,8 @@ import sys
 from pathlib import Path
 
 from .api import compare_gds_files
-from .config import AllowedRegion, CompareConfig, LayerSpec
-from .semantics import Backend, DifferenceDirection, EvidenceEngine, FailurePolicy
+from .config import CompareConfig, parse_allowed_region, parse_allowed_whole_layer
+from .semantics import Backend, EvidenceEngine, FailurePolicy
 from .templates import extract_template, find_template
 
 
@@ -144,8 +144,8 @@ def _main(
             require_gpu=args.require_gpu,
             neutral_fallback=general_output,
         )
-        allowed_regions = tuple(_parse_allowed_region(value) for value in args.allow_region) + tuple(
-            _parse_allowed_whole_layer(value) for value in args.allow_whole_layer
+        allowed_regions = tuple(parse_allowed_region(value) for value in args.allow_region) + tuple(
+            parse_allowed_whole_layer(value) for value in args.allow_whole_layer
         )
         config = CompareConfig(
             old_path=args.old_gds,
@@ -344,24 +344,6 @@ def _resolve_evidence_engine(
     if not neutral_fallback:
         return evidence_engine
     return EvidenceEngine.GPU_POLYGON.value
-
-
-def _parse_allowed_region(value: str) -> AllowedRegion:
-    parts = [part.strip() for part in value.split(",")]
-    if len(parts) not in {6, 7}:
-        raise ValueError("allowed region must have form L:D,DIRECTION,X0,Y0,X1,Y1[,HALO]")
-    layer = LayerSpec.parse(parts[0])
-    direction = DifferenceDirection.coerce(parts[1])
-    x0, y0, x1, y1 = (int(part) for part in parts[2:6])
-    halo = int(parts[6]) if len(parts) == 7 else 0
-    return AllowedRegion(layers=(layer,), direction=direction, bbox=(x0, y0, x1, y1), halo_dbu=halo)
-
-
-def _parse_allowed_whole_layer(value: str) -> AllowedRegion:
-    parts = [part.strip() for part in value.split(",")]
-    if len(parts) != 2:
-        raise ValueError("whole-layer allowance must have form L:D,DIRECTION")
-    return AllowedRegion(layers=(LayerSpec.parse(parts[0]),), direction=DifferenceDirection.coerce(parts[1]), whole_layer=True)
 
 
 if __name__ == "__main__":

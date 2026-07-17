@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from scgds.gdsdiff import (
+from gdsdiff import (
     AllowedRegion,
     CompareStatus,
     DifferenceDirection,
@@ -11,7 +11,7 @@ from scgds.gdsdiff import (
     format_twice_area,
     run_full_exact_oracle,
 )
-from scgds.gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.geometry import LayerTable, PolygonBuffer
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):

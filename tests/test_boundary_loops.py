@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from scgds.gdsdiff.boundary_loops import assemble_boundary_loops
-from scgds.gdsdiff.exact_oracle import DiffFragment
-from scgds.gdsdiff.geometry import polygon_bbox, polygon_twice_area
+from gdsdiff.boundary_loops import assemble_boundary_loops
+from gdsdiff.exact_oracle import DiffFragment
+from gdsdiff.geometry import polygon_bbox, polygon_twice_area
 
 
 def test_assemble_boundary_loops_merges_adjacent_rectangles():
