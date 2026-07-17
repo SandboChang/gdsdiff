@@ -85,7 +85,17 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           uv venv /tmp/gdsdiff-testpypi
           uv pip install --python /tmp/gdsdiff-testpypi/bin/python --index-url https://pypi.org/simple gdstk numpy jsonschema
-          uv pip install --python /tmp/gdsdiff-testpypi/bin/python --index-url https://test.pypi.org/simple --no-deps "gdsdiff==$version"
+          for attempt in 1 2 3 4 5 6; do
+            if uv pip install --python /tmp/gdsdiff-testpypi/bin/python \
+              --index-url https://test.pypi.org/simple --no-deps "gdsdiff==$version"; then
+              break
+            fi
+            if test "$attempt" -eq 6; then
+              echo "gdsdiff==$version did not become visible on TestPyPI" >&2
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           cd /tmp
           /tmp/gdsdiff-testpypi/bin/python "$GITHUB_WORKSPACE/scripts/installed_smoke.py"
 

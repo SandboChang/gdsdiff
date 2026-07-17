@@ -45,3 +45,7 @@ TestPyPI, and passed a clean indexed install. The indexed wheel SHA-256 is
 the sdist SHA-256 is
 `22132bcec744af4940464b120138a026c04b28f6fc6eaf6b89853b75eac111e8`.
 Both files were byte-identical to the immutable GitHub workflow artifact.
+Stable run `29594770086` exposed a short TestPyPI visibility delay after a
+successful signed upload. A clean indexed install passed as soon as the files
+became visible; future release verification now retries this bounded,
+eventually consistent index transition before failing.
