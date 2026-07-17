@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import LayerSpec
-from ..native_cache import cached_native_library_path
+from ..native_cache import ensure_cached_native_library
 
 
 class GeometryCtypesUnavailable(RuntimeError):
@@ -171,8 +171,6 @@ def geometry_ctypes_available() -> bool:
 
 def _load_library() -> ctypes.CDLL:
     path = _library_path()
-    if not path.exists() or _source_path().stat().st_mtime > path.stat().st_mtime:
-        _build_library(path)
     library = ctypes.CDLL(str(path))
     library.gds_geometry_summary.argtypes = [
         ctypes.c_char_p,
@@ -240,7 +238,12 @@ def _build_library(path: Path) -> None:
 
 
 def _library_path() -> Path:
-    return cached_native_library_path("_gds_geometry_scan.so")
+    return ensure_cached_native_library(
+        "_gds_geometry_scan.so",
+        sources=(_source_path(),),
+        build_key=("g++", "-std=c++17", "-O3", "-shared", "-fPIC"),
+        builder=_build_library,
+    )
 
 
 def _source_path() -> Path:
