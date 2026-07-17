@@ -11,7 +11,7 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
   diagnostics; the Calibrator-specific profile factory moved back to `scgds`.
 - Correctness: normalized report JSON, semantic diff GDS, and CLI help exactly
   match the embedded baseline.
-- Tests: the final local WSL suite produced 263 passes and 62
+- Tests: the final local WSL suite produced 264 passes and 62
   capability/fixture skips with zero failures or warnings. Peak test-process
   RSS in the extraction parity run was 158,440 KiB.
 - Hosted portability: GitHub Actions run `29576086947` passed the complete
@@ -21,6 +21,10 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
 - CPU exact performance: seven-run median 0.191918416 seconds versus baseline
   0.208896740 seconds (8.13% faster); median absolute deviation was
   0.001739505 seconds.
+- Peak RSS: across 21 isolated representative exact-compare processes, the
+  standalone median was 42,540 KiB versus 42,436 KiB embedded (+0.245%). The
+  installed version remains derived from wheel metadata without eagerly loading
+  Python's unrelated metadata/email/ZIP modules into every comparison process.
 - Packaging: wheel and sdist built successfully, passed `twine check`, and the
   wheel contains the report schema, `py.typed`, CUDA/Metal/native sources, and
   no tests or `scgds` package. A clean wheel-only environment passed

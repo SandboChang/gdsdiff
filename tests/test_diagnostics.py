@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from importlib.metadata import version
 
-from gdsdiff import backend_diagnostics
+from gdsdiff import __version__, backend_diagnostics
 
 
 def test_backend_diagnostics_is_cpu_safe_and_structured():
@@ -26,3 +27,7 @@ def test_diagnostics_module_prints_json():
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout)["capabilities"]["cpu_available"] is True
+
+
+def test_report_version_matches_installed_distribution():
+    assert __version__ == version("gdsdiff")
