@@ -82,8 +82,7 @@ jobs:
         run: |
           python_path=$(uv run --locked python -c 'import sys; print(sys.executable)')
           mkdir -p /tmp/gdsdiff-no-tools /tmp/gdsdiff-empty-cache
-          ln -s "$python_path" /tmp/gdsdiff-no-tools/python
           cd /tmp
           PATH=/tmp/gdsdiff-no-tools GDSDIFF_NATIVE_CACHE_DIR=/tmp/gdsdiff-empty-cache \
-            python -c 'import gdsdiff; d=gdsdiff.backend_diagnostics(); assert d["capabilities"]["cpu_available"]; assert not d["capabilities"]["nvcc_available"]'
+            "$python_path" -c 'import gdsdiff; d=gdsdiff.backend_diagnostics(); assert d["capabilities"]["cpu_available"]; assert not d["capabilities"]["nvcc_available"]'
           test -z "$(find /tmp/gdsdiff-empty-cache -type f -print -quit)"
