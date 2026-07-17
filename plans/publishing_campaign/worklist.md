@@ -31,8 +31,16 @@
 
 ## Gate 5: Hosted release
 
-- Status: waiting for public-repository cutover, Trusted Publisher account setup,
+- Status: public-repository cutover, protected GitHub environments, and hosted
+  cross-platform CI completed; waiting for account-side Trusted Publisher setup
   and TestPyPI/PyPI promotion
 - Add pinned CI and Trusted Publishing workflows.
 - Make repositories public, configure environments/publishers, rehearse on TestPyPI,
   then promote identical artifacts to PyPI with protected approval.
+
+Hosted evidence on 2026-07-18: public `SandboChang/gdsdiff` commit `6a13637`
+passed compilerless CPU, package/install smoke, and Ubuntu/macOS/Windows tests on
+Python 3.10 and 3.14 in Actions run `29591224278`. GitHub environments
+`testpypi` and approval-protected `pypi` are configured. No release tag will be
+pushed until both package-index accounts trust `release.yml` with the matching
+environment.
