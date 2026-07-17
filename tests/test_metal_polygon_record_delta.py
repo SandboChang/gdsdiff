@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import gdstk
 import numpy as np
 import pytest
@@ -34,6 +35,8 @@ from gdsdiff.source_edge_diff import (
 )
 from gdsdiff import source_edge_diff as source_edges
 from gdsdiff.tiling import TileConfig, run_cpu_tile_prefilter
+
+requires_posix_native = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
 
 def _rect(x0, y0, x1, y1):
@@ -111,6 +114,7 @@ def test_metal_byte_compare_matches_equal_size_files_when_available(tmp_path):
     assert result.same is False
 
 
+@requires_posix_native
 def test_native_polygon_extraction_preserves_polygon_hashes(tmp_path):
     old_path, _new_path = _write_changed_rect_pair(tmp_path)
 
@@ -120,6 +124,7 @@ def test_native_polygon_extraction_preserves_polygon_hashes(tmp_path):
     assert extraction.buffer.polygon_hashes.shape == (2, 2)
 
 
+@requires_posix_native
 def test_metal_polygon_record_delta_size_gate_is_checked_before_runtime_probe(tmp_path, monkeypatch):
     old_path, new_path = _write_changed_rect_pair(tmp_path)
     old_extraction = extract_gds_polygons_native(old_path)

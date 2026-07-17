@@ -126,8 +126,8 @@ def test_synthetic_adversarial_cases_match_metal_with_cpu_audit_when_available(t
 
 def _metal_available() -> bool:
     try:
-        from gdsdiff.backends.metal_ctypes import metal_ctypes_available
+        from gdsdiff.native import discover_native_capabilities
 
-        return metal_ctypes_available()
+        return discover_native_capabilities().metal_available
     except Exception:
         return False

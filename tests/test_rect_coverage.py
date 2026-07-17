@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import gdstk
@@ -43,6 +44,7 @@ def test_cuda_rectangle_coverage_diff_emits_directional_fragments(tmp_path):
     assert result.stats.cuda_kernel_count == 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 def test_cuda_rectangle_coverage_diff_rejects_non_rectangles(tmp_path):
     path = tmp_path / "tri.gds"
     lib = gdstk.Library(unit=1e-6, precision=1e-9)

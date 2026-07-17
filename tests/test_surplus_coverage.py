@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import gdstk
 import pytest
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
 from gdsdiff.backends.cuda_ctypes import cuda_ctypes_available, run_cuda_polygon_record_delta
 from gdsdiff.backends.polygon_extract_ctypes import extract_gds_polygons_native

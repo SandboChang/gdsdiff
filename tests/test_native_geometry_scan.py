@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
+
 import gdstk
+import pytest
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
 from gdsdiff.backends.geometry_ctypes import compare_gds_geometry_native, summarize_gds_geometry_native
 from gdsdiff.config import LayerSpec

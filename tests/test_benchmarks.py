@@ -64,3 +64,10 @@ def test_benchmark_cli_writes_json(tmp_path):
     assert exit_code == 0
     text = output.read_text(encoding="utf-8")
     assert "gdsdiff-benchmark-v1" in text
+
+
+def test_benchmark_pair_parser_accepts_windows_drive_letters():
+    pair = benchmarks._parse_pairs([r"tiny:C:\layouts\before.gds:D:\layouts\after.gds"])[0]
+    assert pair.name == "tiny"
+    assert str(pair.before) == r"C:\layouts\before.gds"
+    assert str(pair.after) == r"D:\layouts\after.gds"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -161,8 +162,12 @@ def main(argv: list[str] | None = None) -> int:
 def _parse_pairs(values: list[str]) -> tuple[BenchmarkPair, ...]:
     pairs = []
     for value in values:
-        parts = value.split(":")
-        if len(parts) != 3:
+        windows_match = re.fullmatch(r"([^:]+):([A-Za-z]:[\\/].*?):([A-Za-z]:[\\/].*)", value)
+        if windows_match is not None:
+            parts = windows_match.groups()
+        else:
+            parts = value.split(":", 2)
+        if len(parts) != 3 or not all(parts):
             raise ValueError("--pair must have form NAME:BEFORE:AFTER")
         pairs.append(BenchmarkPair(parts[0], Path(parts[1]), Path(parts[2])))
     return tuple(pairs)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 from collections import Counter
 from pathlib import Path
 
 import gdstk
 import pytest
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
 from gdsdiff.backends.polygon_extract_ctypes import (
     PolygonExtractCtypesUnavailable,

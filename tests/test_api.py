@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import gdstk
@@ -19,6 +20,8 @@ from gdsdiff import (
 from gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
 from gdsdiff.config import LayerSpec
 from gdsdiff.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
+
+requires_posix_native = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
 
 def _write_pair(tmp_path, *, shifted=True):
@@ -136,6 +139,7 @@ def test_cpu_audit_summary_normalizes_collinear_loop_vertices():
     assert summary["mismatch_count"] == 0
 
 
+@requires_posix_native
 def test_gpu_polygon_metal_source_edge_report_contract(tmp_path, monkeypatch):
     old_path, new_path = _write_pair(tmp_path)
     exact_diff_path = tmp_path / "exact_diff.md"
@@ -342,6 +346,7 @@ def test_exact_component_cuda_rect_reports_backend_stats(tmp_path):
     assert result.policy_result.to_json()["unexpected_area_dbu2"] == "40"
 
 
+@requires_posix_native
 def test_accelerated_default_uses_native_geometry_guard_with_exact_verification(tmp_path, monkeypatch):
     old_path, new_path = _write_pair(tmp_path)
     exact_diff_path = tmp_path / "exact_diff.md"
@@ -649,6 +654,7 @@ def test_gpu_polygon_reports_same_coverage_split_as_inventory_difference(tmp_pat
     assert "`inventory_after_only` | 8 | 0" in markdown
 
 
+@requires_posix_native
 def test_structural_guard_fast_path_attaches_exact_verification(tmp_path, monkeypatch):
     old_path, new_path = _write_count_changed_pair(tmp_path)
     monkeypatch.setattr(
@@ -682,6 +688,7 @@ def test_structural_guard_fast_path_attaches_exact_verification(tmp_path, monkey
     assert payload["timings"]["structural_guard_s"] >= 0
 
 
+@requires_posix_native
 def test_structural_guard_catches_equal_count_structural_change(tmp_path, monkeypatch):
     old_path, new_path = _write_pair(tmp_path, shifted=True)
     monkeypatch.setattr(
@@ -742,6 +749,7 @@ def test_structural_guard_falls_back_when_structure_matches(tmp_path, monkeypatc
     assert "structural_guard" not in payload["backend"]
 
 
+@requires_posix_native
 def test_native_geometry_guard_fast_path_attaches_exact_verification(tmp_path, monkeypatch):
     old_path, new_path = _write_count_changed_pair(tmp_path)
     monkeypatch.setattr(
@@ -775,6 +783,7 @@ def test_native_geometry_guard_fast_path_attaches_exact_verification(tmp_path, m
     assert payload["timings"]["native_geometry_guard_s"] >= 0
 
 
+@requires_posix_native
 def test_native_geometry_guard_catches_equal_count_geometry_change(tmp_path, monkeypatch):
     old_path, new_path = _write_pair(tmp_path, shifted=True)
     monkeypatch.setattr(

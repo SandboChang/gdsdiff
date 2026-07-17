@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
+
 import gdstk
+import pytest
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
 from gdsdiff.backends.structural_ctypes import summarize_gds_structure_native
 from gdsdiff.structural_guard import summarize_gds_structure

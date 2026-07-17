@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 import gdstk
 import numpy as np
 import pytest
+
+requires_posix_native = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
 from gdsdiff.backends.cuda_ctypes import (
     CudaCtypesUnavailable,
@@ -45,6 +48,7 @@ from gdsdiff.source_edge_diff import (
 )
 
 
+@requires_posix_native
 def test_native_boundary_loop_ctypes_traces_integer_edges():
     if not boundary_loop_ctypes_available():
         pytest.skip("native boundary loop backend is not available")
@@ -70,6 +74,7 @@ def test_native_boundary_loop_ctypes_traces_integer_edges():
     assert [fragment.twice_area for fragment in result.fragments] == [16, 8]
 
 
+@requires_posix_native
 def test_native_boundary_edges_from_fragments_cancel_shared_collinear_edges():
     if not boundary_loop_ctypes_available():
         pytest.skip("native boundary loop backend is not available")
@@ -623,6 +628,7 @@ def test_context_components_clip_new_surplus_against_existing_old_coverage(tmp_p
     assert areas.tolist() == [[0, 16_000_000, 16_000_000]]
 
 
+@requires_posix_native
 def test_context_expansion_prefers_metal_context_pairs(tmp_path, monkeypatch):
     old_path = tmp_path / "old.gds"
     new_path = tmp_path / "new.gds"
