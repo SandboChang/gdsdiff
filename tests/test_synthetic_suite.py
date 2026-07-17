@@ -128,6 +128,7 @@ def _metal_available() -> bool:
     try:
         from gdsdiff.native import discover_native_capabilities
 
-        return discover_native_capabilities().metal_available
+        first = discover_native_capabilities().metal_available
+        return first and discover_native_capabilities().metal_available
     except Exception:
         return False
