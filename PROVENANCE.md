@@ -6,5 +6,6 @@ This repository was filtered from `SandboChang/scgds` at source commit
 Preserved history covers the original `gds_tools_tk/gpu_compare`, renamed
 `gds_tools_tk/gdsdiff`, and final `scgds/gdsdiff` implementation and focused
 tests. The source and test paths were normalized to `src/gdsdiff` and `tests`.
-The filtered commit map remains available in `.git/filter-repo/commit-map` in
-the extraction checkout.
+The retained non-empty mappings are recorded in
+`provenance/scgds-commit-map.txt`; the complete generated map also remains in
+`.git/filter-repo/commit-map` in the original extraction checkout.
