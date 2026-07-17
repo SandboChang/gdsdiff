@@ -24,23 +24,24 @@
 
 ## Gate 4: Distribution qualification
 
-- Status: completed locally; hosted TestPyPI installation remains pending
+- Status: completed locally and from the TestPyPI index
 - Build wheel and sdist from clean native-filesystem snapshots.
 - Test wheel/sdist installation with both `uv` and `pip` outside source trees.
 - Run CPU-only and installed-wheel CUDA smoke tests.
 
 ## Gate 5: Hosted release
 
-- Status: public-repository cutover, protected GitHub environments, and hosted
-  cross-platform CI completed; waiting for account-side Trusted Publisher setup
-  and TestPyPI/PyPI promotion
+- Status: release candidate completed; production promotion in progress
 - Add pinned CI and Trusted Publishing workflows.
 - Make repositories public, configure environments/publishers, rehearse on TestPyPI,
   then promote identical artifacts to PyPI with protected approval.
 
-Hosted evidence on 2026-07-18: public `SandboChang/gdsdiff` commit `6a13637`
-passed compilerless CPU, package/install smoke, and Ubuntu/macOS/Windows tests on
-Python 3.10 and 3.14 in Actions run `29591224278`. GitHub environments
-`testpypi` and approval-protected `pypi` are configured. No release tag will be
-pushed until both package-index accounts trust `release.yml` with the matching
-environment.
+Hosted evidence on 2026-07-18: public `SandboChang/gdsdiff` tag `v0.1.0rc1` at
+commit `4bc971c` passed the compilerless CPU, package/install smoke, and full
+Ubuntu/macOS/Windows Python 3.10/3.14 matrix in Actions run `29593937569`.
+Trusted Publishing run `29593937282` built once, uploaded signed artifacts to
+TestPyPI, and passed a clean indexed install. The indexed wheel SHA-256 is
+`b509364a657359b087bdbff8bedb09d1c72db91ca414a7c30190e14e8c24d578`;
+the sdist SHA-256 is
+`22132bcec744af4940464b120138a026c04b28f6fc6eaf6b89853b75eac111e8`.
+Both files were byte-identical to the immutable GitHub workflow artifact.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gdsdiff"
-version = "0.1.0rc1"
+version = "0.1.0"
 description = "Exact, evidence-oriented comparison of GDSII layout geometry"
 readme = "README.md"
 requires-python = ">=3.10"
