@@ -31,7 +31,7 @@
 
 ## Gate 5: Hosted release
 
-- Status: release candidate completed; production promotion in progress
+- Status: completed
 - Add pinned CI and Trusted Publishing workflows.
 - Make repositories public, configure environments/publishers, rehearse on TestPyPI,
   then promote identical artifacts to PyPI with protected approval.
@@ -49,3 +49,14 @@ Stable run `29594770086` exposed a short TestPyPI visibility delay after a
 successful signed upload. A clean indexed install passed as soon as the files
 became visible; future release verification now retries this bounded,
 eventually consistent index transition before failing.
+The protected production job then published signed `0.1.0` artifacts to PyPI:
+wheel SHA-256
+`0a561cf759639c515306d24568ff64ca148722bc4b0fa918326b8138e7b16c43`
+and sdist SHA-256
+`1a5f16a241b0e3797d027cdef2b20dd3c61128e27c7dd43e913285957605023e`.
+Both production files were byte-identical to the immutable workflow artifact,
+and a production-only clean install passed the installed-package smoke test and
+dependency check. The original GitHub Release job lacked repository context;
+after exact-asset verification, the release was created at `v0.1.0`, and future
+jobs now pass `--repo "$GITHUB_REPOSITORY"` explicitly while retaining
+`--verify-tag`.
