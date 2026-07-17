@@ -60,3 +60,5 @@ dependency check. The original GitHub Release job lacked repository context;
 after exact-asset verification, the release was created at `v0.1.0`, and future
 jobs now pass `--repo "$GITHUB_REPOSITORY"` explicitly while retaining
 `--verify-tag`.
+The bounded TestPyPI loop also refreshes the package explicitly so uv cannot
+retain a negative index response across attempts.
