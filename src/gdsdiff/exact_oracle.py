@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-import multiprocessing as mp
 from dataclasses import dataclass, field
 from typing import Callable
 
 from .config import LayerSpec
 from .geometry import PolygonBuffer, polygon_bbox, polygon_twice_area
 from .grid import snap_to_grid
+from .multiprocessing_support import fork_context
 
 _WORKER_OLD_BY_LAYER = None
 _WORKER_NEW_BY_LAYER = None
@@ -111,13 +111,20 @@ def run_full_exact_oracle(
             for layer in selected_layers
         )
     else:
+        context = fork_context()
         global _WORKER_OLD_BY_LAYER, _WORKER_NEW_BY_LAYER, _WORKER_PRECISION
         _WORKER_OLD_BY_LAYER = old_by_layer
         _WORKER_NEW_BY_LAYER = new_by_layer
         _WORKER_PRECISION = precision
         try:
-            with mp.get_context("fork").Pool(processes=worker_count) as pool:
-                stripe_diffs = tuple(pool.map(_exact_layer_diff_task, flat_tasks, chunksize=1))
+            if context is None:
+                stripe_diffs = tuple(_exact_layer_diff_task(task) for task in flat_tasks)
+            else:
+                try:
+                    with context.Pool(processes=worker_count) as pool:
+                        stripe_diffs = tuple(pool.map(_exact_layer_diff_task, flat_tasks, chunksize=1))
+                except OSError:
+                    stripe_diffs = tuple(_exact_layer_diff_task(task) for task in flat_tasks)
         finally:
             _WORKER_OLD_BY_LAYER = None
             _WORKER_NEW_BY_LAYER = None
@@ -563,12 +570,18 @@ def _buffer_points_by_layer(buffer: PolygonBuffer) -> dict[LayerSpec, list[tuple
     chunk_count = max(worker_count, worker_count * 8)
     chunk_size = max(1, (buffer.polygon_count + chunk_count - 1) // chunk_count)
     chunks = tuple((start, min(start + chunk_size, buffer.polygon_count)) for start in range(0, buffer.polygon_count, chunk_size))
+    context = fork_context()
+    if context is None:
+        return _buffer_points_by_layer_range(buffer, 0, buffer.polygon_count)
 
     global _WORKER_BUFFER
     _WORKER_BUFFER = buffer
     try:
-        with mp.get_context("fork").Pool(processes=worker_count) as pool:
-            chunk_results = pool.map(_buffer_points_by_layer_worker, chunks, chunksize=1)
+        try:
+            with context.Pool(processes=worker_count) as pool:
+                chunk_results = pool.map(_buffer_points_by_layer_worker, chunks, chunksize=1)
+        except OSError:
+            return _buffer_points_by_layer_range(buffer, 0, buffer.polygon_count)
     finally:
         _WORKER_BUFFER = None
 

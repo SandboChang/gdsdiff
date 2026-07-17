@@ -192,6 +192,11 @@ def release_metal_device_memory() -> None:
 
 
 def compare_files_metal(old_path: str | Path, new_path: str | Path) -> MetalByteCompare:
+    old_size = Path(old_path).stat().st_size
+    new_size = Path(new_path).stat().st_size
+    if old_size != new_size:
+        return MetalByteCompare(old_size=old_size, new_size=new_size, same=False)
+
     library = _load_library()
     result = _CByteCompareResult()
     status = library.gds_metal_compare_files(

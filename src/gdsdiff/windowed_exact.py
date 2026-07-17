@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import multiprocessing as mp
 import os
 from dataclasses import dataclass, field
 
@@ -10,6 +9,7 @@ from .config import LayerSpec
 from .exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff, run_full_exact_oracle
 from .geometry import PolygonBuffer, polygon_bbox, polygon_twice_area
 from .grid import snap_to_grid
+from .multiprocessing_support import fork_context
 from .spatial import BBox, SpatialIndex
 from .windows import CandidateWindow
 
@@ -122,14 +122,20 @@ def _run_window_tasks(
     worker_count = _resolve_window_worker_count(len(window_tasks))
     if worker_count <= 1:
         return tuple(_compute_window_task((old_buffer, new_buffer, precision, *task)) for task in window_tasks)
+    context = fork_context()
+    if context is None:
+        return tuple(_compute_window_task((old_buffer, new_buffer, precision, *task)) for task in window_tasks)
 
     global _WORKER_OLD_BUFFER, _WORKER_NEW_BUFFER, _WORKER_PRECISION
     _WORKER_OLD_BUFFER = old_buffer
     _WORKER_NEW_BUFFER = new_buffer
     _WORKER_PRECISION = precision
     try:
-        with mp.get_context("fork").Pool(processes=worker_count) as pool:
-            return tuple(pool.map(_compute_window_task_worker, window_tasks, chunksize=1))
+        try:
+            with context.Pool(processes=worker_count) as pool:
+                return tuple(pool.map(_compute_window_task_worker, window_tasks, chunksize=1))
+        except OSError:
+            return tuple(_compute_window_task((old_buffer, new_buffer, precision, *task)) for task in window_tasks)
     finally:
         _WORKER_OLD_BUFFER = None
         _WORKER_NEW_BUFFER = None

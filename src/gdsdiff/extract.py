@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import multiprocessing as mp
 import os
 from dataclasses import dataclass
 from decimal import Decimal
@@ -15,6 +14,7 @@ from .gds_metadata import decimal_from_number
 from .geometry import LayerTable, PolygonBuffer, normalize_polygon_points, polygon_bbox, polygon_flags
 from .grid import DEFAULT_COORDINATE_SAFETY_LIMIT, snap_to_grid
 from .inventory import select_top_cell
+from .multiprocessing_support import fork_context
 from .semantics import PathPolicy
 
 _WORKER_RAW_POLYGONS = None
@@ -141,6 +141,9 @@ def _extract_polygon_records(
     chunk_count = max(worker_count, worker_count * 8)
     chunk_size = max(1, (len(raw_polygons) + chunk_count - 1) // chunk_count)
     chunks = tuple((start, min(start + chunk_size, len(raw_polygons))) for start in range(0, len(raw_polygons), chunk_size))
+    context = fork_context()
+    if context is None:
+        return _extract_polygon_records_serial(raw_polygons, selected_layers, grid, unit)
 
     global _WORKER_RAW_POLYGONS, _WORKER_SELECTED_LAYERS, _WORKER_GRID, _WORKER_UNIT
     _WORKER_RAW_POLYGONS = raw_polygons
@@ -148,8 +151,11 @@ def _extract_polygon_records(
     _WORKER_GRID = grid
     _WORKER_UNIT = unit
     try:
-        with mp.get_context("fork").Pool(processes=worker_count) as pool:
-            chunk_results = pool.map(_extract_polygon_records_worker, chunks, chunksize=1)
+        try:
+            with context.Pool(processes=worker_count) as pool:
+                chunk_results = pool.map(_extract_polygon_records_worker, chunks, chunksize=1)
+        except OSError:
+            return _extract_polygon_records_serial(raw_polygons, selected_layers, grid, unit)
     finally:
         _WORKER_RAW_POLYGONS = None
         _WORKER_SELECTED_LAYERS = None
@@ -195,14 +201,20 @@ def _extract_polygon_records_fast(
     chunk_count = max(worker_count, worker_count * 8)
     chunk_size = max(1, (len(raw_polygons) + chunk_count - 1) // chunk_count)
     chunks = tuple((start, min(start + chunk_size, len(raw_polygons))) for start in range(0, len(raw_polygons), chunk_size))
+    context = fork_context()
+    if context is None:
+        return _extract_polygon_records_fast_from_range(raw_polygons, selected_layers, scale, 0, len(raw_polygons))
 
     global _WORKER_RAW_POLYGONS, _WORKER_SELECTED_LAYERS, _WORKER_FAST_SCALE
     _WORKER_RAW_POLYGONS = raw_polygons
     _WORKER_SELECTED_LAYERS = selected_layers
     _WORKER_FAST_SCALE = scale
     try:
-        with mp.get_context("fork").Pool(processes=worker_count) as pool:
-            chunk_results = pool.map(_extract_polygon_records_fast_worker, chunks, chunksize=1)
+        try:
+            with context.Pool(processes=worker_count) as pool:
+                chunk_results = pool.map(_extract_polygon_records_fast_worker, chunks, chunksize=1)
+        except OSError:
+            return _extract_polygon_records_fast_from_range(raw_polygons, selected_layers, scale, 0, len(raw_polygons))
     finally:
         _WORKER_RAW_POLYGONS = None
         _WORKER_SELECTED_LAYERS = None

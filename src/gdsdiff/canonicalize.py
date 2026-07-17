@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import multiprocessing as mp
 import os
 import struct
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .geometry import PolygonBuffer
+from .multiprocessing_support import fork_context
 
 ENCODING_VERSION = 1
 VALIDITY_VALID = 0
@@ -74,12 +74,18 @@ def _canonical_records(buffer: PolygonBuffer, *, force_hash_collision: bool) -> 
     chunk_count = max(worker_count, worker_count * 8)
     chunk_size = max(1, (buffer.polygon_count + chunk_count - 1) // chunk_count)
     chunks = tuple((start, min(start + chunk_size, buffer.polygon_count)) for start in range(0, buffer.polygon_count, chunk_size))
+    context = fork_context()
+    if context is None:
+        return _canonical_records_range(buffer, 0, buffer.polygon_count, force_hash_collision)
     global _WORKER_BUFFER, _WORKER_FORCE_HASH_COLLISION
     _WORKER_BUFFER = buffer
     _WORKER_FORCE_HASH_COLLISION = force_hash_collision
     try:
-        with mp.get_context("fork").Pool(processes=worker_count) as pool:
-            chunk_records = pool.map(_canonical_records_worker, chunks, chunksize=1)
+        try:
+            with context.Pool(processes=worker_count) as pool:
+                chunk_records = pool.map(_canonical_records_worker, chunks, chunksize=1)
+        except OSError:
+            return _canonical_records_range(buffer, 0, buffer.polygon_count, force_hash_collision)
     finally:
         _WORKER_BUFFER = None
         _WORKER_FORCE_HASH_COLLISION = False

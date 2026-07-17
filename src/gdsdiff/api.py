@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
@@ -33,6 +34,7 @@ from .extract import ExtractionResult, extract_gds_polygons
 from .gds_metadata import read_gds_metadata
 from .geometry import PolygonBuffer
 from .hierarchy import compare_hierarchy
+from .multiprocessing_support import mark_portable_process_worker, portable_process_context
 from .native import discover_native_capabilities
 from .policy import PolicyClassificationResult, classify_exact_differences
 from .polygon_components import (
@@ -542,10 +544,17 @@ def _extract_pair(
     old_args = (config.old_path, old_top_name, config.layers, config.dbu, config.path_policy)
     new_args = (config.new_path, new_top_name, config.layers, config.dbu, config.path_policy)
     if _should_extract_pair_in_parallel(config):
-        with ProcessPoolExecutor(max_workers=2) as executor:
-            old_future = executor.submit(_extract_one, old_args)
-            new_future = executor.submit(_extract_one, new_args)
-            return old_future.result(), new_future.result()
+        try:
+            with ProcessPoolExecutor(
+                max_workers=2,
+                mp_context=portable_process_context(),
+                initializer=mark_portable_process_worker,
+            ) as executor:
+                old_future = executor.submit(_extract_one, old_args)
+                new_future = executor.submit(_extract_one, new_args)
+                return old_future.result(), new_future.result()
+        except (BrokenProcessPool, OSError):
+            pass
     return _extract_one(old_args), _extract_one(new_args)
 
 
@@ -560,10 +569,17 @@ def _cached_geometry_pair(
     old_args = (config.geometry_cache_dir, config.old_path, old_top_name, config.layers, config.dbu, config.path_policy)
     new_args = (config.geometry_cache_dir, config.new_path, new_top_name, config.layers, config.dbu, config.path_policy)
     if _should_extract_pair_in_parallel(config):
-        with ProcessPoolExecutor(max_workers=2) as executor:
-            old_future = executor.submit(_cached_geometry_one, old_args)
-            new_future = executor.submit(_cached_geometry_one, new_args)
-            return old_future.result(), new_future.result()
+        try:
+            with ProcessPoolExecutor(
+                max_workers=2,
+                mp_context=portable_process_context(),
+                initializer=mark_portable_process_worker,
+            ) as executor:
+                old_future = executor.submit(_cached_geometry_one, old_args)
+                new_future = executor.submit(_cached_geometry_one, new_args)
+                return old_future.result(), new_future.result()
+        except (BrokenProcessPool, OSError):
+            pass
     return _cached_geometry_one(old_args), _cached_geometry_one(new_args)
 
 

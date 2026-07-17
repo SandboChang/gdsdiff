@@ -224,6 +224,11 @@ def release_cuda_device_memory() -> None:
 
 
 def compare_files_cuda(old_path: str | Path, new_path: str | Path) -> CudaByteCompare:
+    old_size = Path(old_path).stat().st_size
+    new_size = Path(new_path).stat().st_size
+    if old_size != new_size:
+        return CudaByteCompare(old_size=old_size, new_size=new_size, same=False)
+
     library = _load_library()
     result = _CByteCompareResult()
     status = library.gds_cuda_compare_files(

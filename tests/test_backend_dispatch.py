@@ -109,6 +109,20 @@ def test_accelerated_identity_prefers_selected_metal_backend_for_size_mismatch(t
     assert identity.same is False
 
 
+def test_accelerated_identity_short_circuits_cuda_size_mismatch_without_toolchain(tmp_path):
+    old_path = tmp_path / "old.bin"
+    new_path = tmp_path / "new.bin"
+    old_path.write_bytes(b"abc")
+    new_path.write_bytes(b"abcd")
+
+    identity = compare_file_identity_accelerated(old_path, new_path, preferred_backend="cuda")
+
+    assert identity.method == "cuda-byte-compare"
+    assert identity.old_size == 3
+    assert identity.new_size == 4
+    assert identity.same is False
+
+
 def test_cpu_backend_has_no_fallback_reason(tmp_path):
     old_path, new_path = _write_pair(tmp_path, shifted=False)
 

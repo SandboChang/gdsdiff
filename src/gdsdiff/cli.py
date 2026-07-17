@@ -130,6 +130,13 @@ def _main(
     parser = build_parser(prog=prog, description=description, default_backend=default_backend)
     args = parser.parse_args(argv)
     try:
+        _validate_input_paths(args.old_gds, args.new_gds)
+    except ValueError as exc:
+        if general_output and not args.quiet:
+            print("status=unsupported-input evidence_status=unsupported-input differences_found=false")
+        print(f"{prog}: {exc}", file=sys.stderr)
+        return 2
+    try:
         json_report_path, diff_gds_path, markdown_path, exact_diff_markdown_path = _resolve_artifact_paths(args)
         evidence_engine = _resolve_evidence_engine(
             args.evidence_engine,
@@ -294,6 +301,12 @@ def _resolve_artifact_paths(args: argparse.Namespace) -> tuple[Path | None, Path
         json_report_path = json_report_path or output_dir / "report.json"
         exact_diff_markdown_path = exact_diff_markdown_path or output_dir / "exact_diff.md"
     return json_report_path, diff_gds_path, markdown_path, exact_diff_markdown_path
+
+
+def _validate_input_paths(*paths: Path) -> None:
+    for path in paths:
+        if not path.is_file():
+            raise ValueError(f"input GDS file does not exist or is not a regular file: {path}")
 
 
 def _parse_user_bbox(value: str) -> tuple[float, float, float, float]:

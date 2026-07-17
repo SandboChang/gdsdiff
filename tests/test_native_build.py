@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib
 
 from scgds import gdsdiff
 from scgds.gdsdiff.native_cache import cached_native_library_path
@@ -47,7 +51,7 @@ def test_pyproject_defines_cpu_safe_console_entry_point():
     assert pyproject["project"]["scripts"]["gdsdiff"] == "scgds.gdsdiff.cli:main"
     assert "gdstk>=1.0.0" in dependencies
     assert "numpy>=1.26" in dependencies
-    assert optional_dependencies["test"] == ["pytest"]
+    assert optional_dependencies["test"] == ["pytest", "tomli; python_version < '3.11'"]
     assert optional_dependencies["native-dev"] == ["cmake", "pybind11"]
     assert pyproject["tool"]["setuptools"]["packages"]["find"]["include"] == ["scgds*"]
     assert "scgds.tests*" in pyproject["tool"]["setuptools"]["packages"]["find"]["exclude"]
