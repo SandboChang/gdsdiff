@@ -15,10 +15,12 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
   capability/fixture skips; the CUDA-enabled suite produced 311 passes and 17
   capability/fixture skips. Both completed with zero failures or warnings.
   Peak test-process RSS in the extraction parity run was 158,440 KiB.
-- Hosted portability: GitHub Actions run `29576086947` passed the complete
+- Hosted portability: GitHub Actions run `29580448672` passed the complete
   packaging job and the CPU test matrix on Ubuntu, macOS, and Windows with
-  Python 3.10 and 3.14. POSIX on-demand native-build tests are capability-skipped
-  on Windows; the portable Python/CPU implementation remains fully exercised.
+  Python 3.10 and 3.14. The workflow uses the current Node 24 action
+  generations, `actions/checkout@v7` and `actions/setup-python@v6`. POSIX
+  on-demand native-build tests are capability-skipped on Windows; the portable
+  Python/CPU implementation remains fully exercised.
 - CPU exact performance: seven-run median 0.191918416 seconds versus baseline
   0.208896740 seconds (8.13% faster); median absolute deviation was
   0.001739505 seconds.
