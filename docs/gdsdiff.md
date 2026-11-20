@@ -36,6 +36,15 @@ single references rotated by multiples of 90 degrees with no reflection or
 absolute transform flags. Array references with nonidentity transforms and
 other unsupported records have explicit diagnostics.
 
+On the native GPU evidence path, `timings.native_parse_s` is the wall time to
+prepare both inputs, before upload. Per-input `old_native_polygon_*` and
+`new_native_polygon_*` fields break down reading, scanning, normalization, layer
+mapping, placement planning, and packing. The inputs can be prepared in
+parallel, so those times should not be added to get pair wall time. Uncached
+CUDA preparation skips host polygon hashes; the CUDA record comparison hashes
+the vertices on device. For that comparison, `h2d_upload_s` is the time spent in
+host-to-device copy calls and is already included in `gpu_source_record_delta_s`.
+
 For sparse edits on large inputs, the CPU coverage audit can use an aligned
 record reduction after independently reading both full files with `gdstk`. It
 compares integer vertices and retains all common records whose bounds touch a

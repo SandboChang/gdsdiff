@@ -1,19 +1,27 @@
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace {
 
 thread_local std::string g_last_error;
+using Clock = std::chrono::steady_clock;
+
+double elapsed(Clock::time_point start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
 
 struct Point {
     std::int64_t x = 0;
@@ -27,13 +35,37 @@ struct BBox {
     std::int64_t y1 = 0;
 };
 
-struct Polygon {
-    std::int32_t layer = 0;
-    std::int32_t datatype = 0;
-    std::vector<Point> points;
-    BBox bbox;
-    std::uint32_t flags = 0;
+using Layer = std::pair<std::int32_t, std::int32_t>;
+constexpr auto kUnselectedLayer = std::numeric_limits<std::uint32_t>::max();
+
+struct LocalPoint {
+    std::int32_t x;
+    std::int32_t y;
 };
+
+bool operator==(LocalPoint a, LocalPoint b) {
+    return a.x == b.x && a.y == b.y;
+}
+
+struct Polygon {
+    std::size_t xy_offset;
+    std::size_t point_offset;
+    std::uint32_t point_count;
+    Layer layer;
+    std::uint32_t layer_id = kUnselectedLayer;
+    std::uint32_t flags = 0;
+    LocalPoint low{};
+    LocalPoint high{};
+};
+
+struct PolygonBlock {
+    std::size_t begin;
+    std::size_t end;
+    std::uint64_t polygon_count = 0;
+    std::uint64_t vertex_count = 0;
+};
+
+struct Cell;
 
 struct Reference {
     std::string child;
@@ -46,11 +78,16 @@ struct Reference {
     std::int64_t cy = 0;
     std::int64_t rx = 0;
     std::int64_t ry = 0;
+    Cell* target = nullptr;
 };
 
 struct Cell {
     std::vector<Polygon> polygons;
     std::vector<Reference> references;
+    std::vector<PolygonBlock> blocks;
+    BBox bbox;
+    bool visiting = false;
+    bool visited = false;
 };
 
 std::uint16_t read_u16(const unsigned char* p) {
@@ -101,91 +138,106 @@ std::string decode_string(const unsigned char* data, std::size_t size) {
     return std::string(reinterpret_cast<const char*>(data), size);
 }
 
-std::vector<unsigned char> read_file(const char* path) {
+struct FileBytes {
+    std::unique_ptr<unsigned char[]> data;
+    std::size_t size;
+};
+
+FileBytes read_file(const char* path) {
     std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) {
         throw std::runtime_error("unable to open GDS file");
     }
-    const auto size = in.tellg();
+    const std::streamoff size = in.tellg();
     if (size < 0) {
         throw std::runtime_error("unable to determine GDS file size");
     }
-    std::vector<unsigned char> data(static_cast<std::size_t>(size));
+    if (static_cast<std::uintmax_t>(size) > std::numeric_limits<std::size_t>::max() ||
+        size > std::numeric_limits<std::streamsize>::max()) {
+        throw std::overflow_error("GDS file is too large");
+    }
+    FileBytes bytes{std::unique_ptr<unsigned char[]>(new unsigned char[static_cast<std::size_t>(size)]),
+                    static_cast<std::size_t>(size)};
     in.seekg(0, std::ios::beg);
-    if (!data.empty()) {
-        in.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    if (size) {
+        in.read(reinterpret_cast<char*>(bytes.data.get()), static_cast<std::streamsize>(size));
         if (!in) {
             throw std::runtime_error("unable to read GDS file");
         }
     }
-    return data;
+    return bytes;
 }
 
-std::vector<Point> parse_xy(const unsigned char* payload, std::size_t payload_size) {
-    if (payload_size % 8 != 0) {
-        throw std::runtime_error("invalid XY payload length");
-    }
-    std::vector<Point> points;
-    points.reserve(payload_size / 8);
-    for (std::size_t i = 0; i < payload_size; i += 8) {
-        points.push_back(Point{read_i32(payload + i), read_i32(payload + i + 4)});
-    }
-    return points;
+LocalPoint read_xy(const unsigned char* xy) {
+    return {read_i32(xy), read_i32(xy + 4)};
 }
 
-std::vector<Point> normalize_points(std::vector<Point> points) {
-    if (points.size() > 1 && points.front().x == points.back().x && points.front().y == points.back().y) {
-        points.pop_back();
-    }
-    std::vector<Point> normalized;
-    normalized.reserve(points.size());
-    for (const auto& point : points) {
-        if (normalized.empty() || normalized.back().x != point.x || normalized.back().y != point.y) {
-            normalized.push_back(point);
-        }
-    }
-    if (normalized.size() > 1 && normalized.front().x == normalized.back().x && normalized.front().y == normalized.back().y) {
-        normalized.pop_back();
-    }
-    return normalized;
+__int128 cross(LocalPoint a, LocalPoint b) {
+    return static_cast<__int128>(static_cast<std::int64_t>(a.x) * b.y)
+        - static_cast<std::int64_t>(b.x) * a.y;
 }
 
-BBox bbox_from_points(const std::vector<Point>& points) {
-    if (points.empty()) {
-        throw std::runtime_error("cannot compute bbox of empty polygon");
-    }
-    BBox bbox{points[0].x, points[0].y, points[0].x, points[0].y};
-    for (const auto& point : points) {
-        bbox.x0 = std::min(bbox.x0, point.x);
-        bbox.y0 = std::min(bbox.y0, point.y);
-        bbox.x1 = std::max(bbox.x1, point.x);
-        bbox.y1 = std::max(bbox.y1, point.y);
-    }
-    return bbox;
-}
-
-std::uint32_t polygon_flags(const std::vector<Point>& points) {
-    std::uint32_t flags = 0;
-    std::set<std::pair<std::int64_t, std::int64_t>> unique_points;
-    for (const auto& point : points) {
-        unique_points.insert({point.x, point.y});
-    }
-    if (unique_points.size() < 3) {
-        flags |= 1u;
-    }
+void normalize_polygon(Polygon& polygon, const unsigned char* data, LocalPoint* points) {
+    const auto* xy = data + polygon.xy_offset;
+    auto* out = points + polygon.point_offset;
+    const auto first = read_xy(xy);
+    auto prev = first;
+    LocalPoint low = first, high = first, second = first;
+    unsigned distinct = 1;
+    std::uint32_t count = 1;
     __int128 twice_area = 0;
-    if (points.size() >= 3) {
-        for (std::size_t index = 0; index < points.size(); ++index) {
-            const auto& point = points[index];
-            const auto& next = points[(index + 1) % points.size()];
-            twice_area += static_cast<__int128>(point.x) * static_cast<__int128>(next.y)
-                - static_cast<__int128>(next.x) * static_cast<__int128>(point.y);
+    out[0] = first;
+    for (std::uint32_t i = 1; i < polygon.point_count; ++i) {
+        const auto point = read_xy(xy + i * 8);
+        if (point == prev) {
+            continue;
         }
+        out[count++] = point;
+        low = {std::min(low.x, point.x), std::min(low.y, point.y)};
+        high = {std::max(high.x, point.x), std::max(high.y, point.y)};
+        if (distinct == 1) {
+            second = point;
+            distinct = 2;
+        } else if (distinct == 2 && !(point == first) && !(point == second)) {
+            distinct = 3;
+        }
+        twice_area += cross(prev, point);
+        prev = point;
     }
-    if (twice_area == 0) {
-        flags |= 2u;
+    twice_area += cross(prev, first);
+    if (count > 1 && prev == first) {
+        --count;
     }
-    return flags;
+    polygon.point_count = count;
+    polygon.low = low;
+    polygon.high = high;
+    polygon.flags = (distinct < 3 ? 1u : 0u) | (twice_area == 0 ? 2u : 0u);
+}
+
+template<class Work>
+void parallel_ranges(std::size_t count, std::size_t grain, unsigned workers, Work work) {
+    const auto lanes = std::min<std::size_t>(workers, count / grain + (count % grain != 0));
+    if (lanes <= 1) {
+        work(0, count);
+        return;
+    }
+    // Input validation is done before these allocation-free worker callbacks.
+    const auto run = [&](std::size_t lane) {
+        const auto stride = count / lanes;
+        work(lane * stride, lane + 1 == lanes ? count : (lane + 1) * stride);
+    };
+    std::vector<std::thread> threads;
+    threads.reserve(lanes - 1);
+    try {
+        for (std::size_t lane = 1; lane < lanes; ++lane) {
+            threads.emplace_back(run, lane);
+        }
+        run(0);
+    } catch (...) {
+        for (auto& thread : threads) thread.join();
+        throw;
+    }
+    for (auto& thread : threads) thread.join();
 }
 
 std::uint64_t fnv1a_u64(std::uint64_t hash, std::uint64_t value) {
@@ -208,13 +260,22 @@ std::size_t sequence_index(std::size_t count, std::size_t candidate, std::size_t
     return (candidate + count - (step % count)) % count;
 }
 
+struct PointSequence {
+    const std::int64_t* xy;
+    std::size_t count;
+
+    Point operator[](std::size_t index) const {
+        return {xy[2 * index], xy[2 * index + 1]};
+    }
+};
+
 bool sequence_less(
-    const std::vector<Point>& points,
+    PointSequence points,
     std::size_t left_candidate,
     bool left_forward,
     std::size_t right_candidate,
     bool right_forward) {
-    const std::size_t count = points.size();
+    const auto count = points.count;
     for (std::size_t step = 0; step < count; ++step) {
         const auto& left = points[sequence_index(count, left_candidate, step, left_forward)];
         const auto& right = points[sequence_index(count, right_candidate, step, right_forward)];
@@ -228,17 +289,18 @@ bool sequence_less(
     return false;
 }
 
-bool is_axis_aligned_bbox_rectangle(const Polygon& polygon) {
-    if (polygon.points.size() != 4 || polygon.bbox.x0 >= polygon.bbox.x1 || polygon.bbox.y0 >= polygon.bbox.y1) {
+bool is_axis_aligned_bbox_rectangle(PointSequence points, BBox bbox) {
+    if (points.count != 4 || bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1) {
         return false;
     }
     bool corners[4] = {false, false, false, false};
-    for (const auto& point : polygon.points) {
+    for (std::size_t index = 0; index < 4; ++index) {
+        const auto point = points[index];
         int corner = -1;
-        if (point.x == polygon.bbox.x0 && point.y == polygon.bbox.y0) corner = 0;
-        if (point.x == polygon.bbox.x0 && point.y == polygon.bbox.y1) corner = 1;
-        if (point.x == polygon.bbox.x1 && point.y == polygon.bbox.y0) corner = 2;
-        if (point.x == polygon.bbox.x1 && point.y == polygon.bbox.y1) corner = 3;
+        if (point.x == bbox.x0 && point.y == bbox.y0) corner = 0;
+        if (point.x == bbox.x0 && point.y == bbox.y1) corner = 1;
+        if (point.x == bbox.x1 && point.y == bbox.y0) corner = 2;
+        if (point.x == bbox.x1 && point.y == bbox.y1) corner = 3;
         if (corner < 0 || corners[corner]) {
             return false;
         }
@@ -247,36 +309,35 @@ bool is_axis_aligned_bbox_rectangle(const Polygon& polygon) {
     return corners[0] && corners[1] && corners[2] && corners[3];
 }
 
-std::pair<std::uint64_t, std::uint64_t> canonical_polygon_hash(const Polygon& polygon) {
+std::pair<std::uint64_t, std::uint64_t> canonical_polygon_hash(PointSequence points, BBox bbox, std::uint32_t flags) {
     std::uint64_t h0 = 1469598103934665603ull;
     std::uint64_t h1 = 1099511628211ull;
-    const auto& points = polygon.points;
-    if (polygon.flags == 0 && is_axis_aligned_bbox_rectangle(polygon)) {
+    if (flags == 0 && is_axis_aligned_bbox_rectangle(points, bbox)) {
         h0 = fnv1a_u64(fnv1a_u64(h0, 2), 0);
-        h0 = fnv1a_u64(fnv1a_u64(h0, static_cast<std::uint64_t>(polygon.bbox.x0)), static_cast<std::uint64_t>(polygon.bbox.y0));
-        h0 = fnv1a_u64(fnv1a_u64(h0, static_cast<std::uint64_t>(polygon.bbox.x1)), static_cast<std::uint64_t>(polygon.bbox.y1));
-        h1 = fnv1a_u64(fnv1a_u64(h1, static_cast<std::uint64_t>(polygon.bbox.y1)), static_cast<std::uint64_t>(polygon.bbox.x1));
-        h1 = fnv1a_u64(fnv1a_u64(h1, static_cast<std::uint64_t>(polygon.bbox.y0)), static_cast<std::uint64_t>(polygon.bbox.x0));
+        h0 = fnv1a_u64(fnv1a_u64(h0, static_cast<std::uint64_t>(bbox.x0)), static_cast<std::uint64_t>(bbox.y0));
+        h0 = fnv1a_u64(fnv1a_u64(h0, static_cast<std::uint64_t>(bbox.x1)), static_cast<std::uint64_t>(bbox.y1));
+        h1 = fnv1a_u64(fnv1a_u64(h1, static_cast<std::uint64_t>(bbox.y1)), static_cast<std::uint64_t>(bbox.x1));
+        h1 = fnv1a_u64(fnv1a_u64(h1, static_cast<std::uint64_t>(bbox.y0)), static_cast<std::uint64_t>(bbox.x0));
         return {h0, h1};
     }
     std::size_t best_candidate = 0;
     bool best_forward = true;
-    if (polygon.flags == 0 && !points.empty()) {
-        for (std::size_t candidate = 1; candidate < points.size(); ++candidate) {
+    if (flags == 0 && points.count) {
+        for (std::size_t candidate = 1; candidate < points.count; ++candidate) {
             if (sequence_less(points, candidate, true, best_candidate, best_forward)) {
                 best_candidate = candidate;
                 best_forward = true;
             }
         }
-        for (std::size_t candidate = 0; candidate < points.size(); ++candidate) {
+        for (std::size_t candidate = 0; candidate < points.count; ++candidate) {
             if (sequence_less(points, candidate, false, best_candidate, best_forward)) {
                 best_candidate = candidate;
                 best_forward = false;
             }
         }
     }
-    for (std::size_t step = 0; step < points.size(); ++step) {
-        const std::size_t index = polygon.flags == 0 ? sequence_index(points.size(), best_candidate, step, best_forward) : step;
+    for (std::size_t step = 0; step < points.count; ++step) {
+        const auto index = flags == 0 ? sequence_index(points.count, best_candidate, step, best_forward) : step;
         const auto& point = points[index];
         const auto x = static_cast<std::uint64_t>(point.x);
         const auto y = static_cast<std::uint64_t>(point.y);
@@ -286,8 +347,8 @@ std::pair<std::uint64_t, std::uint64_t> canonical_polygon_hash(const Polygon& po
     return {h0, h1};
 }
 
-std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligible) {
-    const auto data = read_file(path);
+std::map<std::string, Cell> parse_gds(const FileBytes& file, bool& oracle_reuse_eligible, std::size_t& point_capacity) {
+    const auto* data = file.data.get();
     std::map<std::string, Cell> cells;
     std::size_t offset = 0;
     std::string current_name;
@@ -298,17 +359,18 @@ std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligi
     std::string pending_sname;
     Reference pending_reference;
     unsigned pending_transform_records = 0;
-    std::vector<Point> pending_xy;
+    const unsigned char* pending_xy = nullptr;
+    std::uint32_t pending_point_count = 0;
     bool saw_endlib = false;
 
-    while (offset + 4 <= data.size()) {
-        const std::uint16_t record_len = read_u16(data.data() + offset);
+    while (file.size - offset >= 4) {
+        const std::uint16_t record_len = read_u16(data + offset);
         const int record_type = data[offset + 2];
         const int data_type = data[offset + 3];
-        if (record_len < 4 || offset + record_len > data.size()) {
+        if (record_len < 4 || record_len > file.size - offset) {
             throw std::runtime_error("invalid GDS record length");
         }
-        const unsigned char* payload = data.data() + offset + 4;
+        const unsigned char* payload = data + offset + 4;
         const std::size_t payload_size = record_len - 4;
         offset += record_len;
 
@@ -324,7 +386,7 @@ std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligi
             element_kind = record_type;
             pending_layer = 0;
             pending_datatype = 0;
-            pending_xy.clear();
+            pending_point_count = 0;
             break;
         case 0x09:  // PATH
             throw std::runtime_error("PATH records are not supported by native polygon extraction");
@@ -336,7 +398,7 @@ std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligi
             pending_reference = Reference{};
             pending_transform_records = 0;
             pending_sname.clear();
-            pending_xy.clear();
+            pending_point_count = 0;
             break;
         case 0x0D:  // LAYER
             if (element_kind == 0x08 && payload_size >= 2) {
@@ -371,7 +433,11 @@ std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligi
             break;
         case 0x10:  // XY
             if (data_type != 0x03) oracle_reuse_eligible = false;
-            pending_xy = parse_xy(payload, payload_size);
+            if (payload_size % 8 != 0) {
+                throw std::runtime_error("invalid XY payload length");
+            }
+            pending_xy = payload;
+            pending_point_count = static_cast<std::uint32_t>(payload_size / 8);
             break;
         case 0x1A:  // STRANS
         case 0x1B:  // MAG
@@ -407,53 +473,55 @@ std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligi
             break;
         case 0x11:  // ENDEL
             if (element_kind == 0x08) {
-                auto normalized = normalize_points(pending_xy);
-                if (!normalized.empty()) {
+                if (pending_point_count) {
+                    if (point_capacity > std::numeric_limits<std::size_t>::max() - pending_point_count) {
+                        throw std::overflow_error("stored vertex count overflow");
+                    }
                     current_cell.polygons.push_back(Polygon{
-                        pending_layer,
-                        pending_datatype,
-                        normalized,
-                        bbox_from_points(normalized),
-                        polygon_flags(normalized),
+                        static_cast<std::size_t>(pending_xy - data), point_capacity, pending_point_count,
+                        {pending_layer, pending_datatype},
                     });
+                    point_capacity += pending_point_count;
                 }
-                if (pending_xy.size() < 4 || pending_xy.front().x != pending_xy.back().x ||
-                    pending_xy.front().y != pending_xy.back().y) {
+                if (pending_point_count < 4 || std::memcmp(pending_xy, pending_xy + 8 * (pending_point_count - 1), 8) != 0) {
                     oracle_reuse_eligible = false;
                 }
             } else if (element_kind == 0x0A || element_kind == 0x0B) {
                 if (pending_sname.empty()) {
                     throw std::runtime_error("reference missing SNAME");
                 }
-                if (pending_xy.empty()) {
+                if (!pending_point_count) {
                     throw std::runtime_error("reference missing XY");
                 }
-                if (element_kind == 0x0A && pending_xy.size() != 1) oracle_reuse_eligible = false;
+                if (element_kind == 0x0A && pending_point_count != 1) oracle_reuse_eligible = false;
                 pending_reference.child = pending_sname;
-                pending_reference.ox = pending_xy[0].x;
-                pending_reference.oy = pending_xy[0].y;
-                pending_reference.cx = pending_xy.size() > 1 ? pending_xy[1].x : pending_xy[0].x;
-                pending_reference.cy = pending_xy.size() > 1 ? pending_xy[1].y : pending_xy[0].y;
-                pending_reference.rx = pending_xy.size() > 2 ? pending_xy[2].x : pending_xy[0].x;
-                pending_reference.ry = pending_xy.size() > 2 ? pending_xy[2].y : pending_xy[0].y;
-                current_cell.references.push_back(pending_reference);
+                const auto origin = read_xy(pending_xy);
+                const auto column = pending_point_count > 1 ? read_xy(pending_xy + 8) : origin;
+                const auto row = pending_point_count > 2 ? read_xy(pending_xy + 16) : origin;
+                pending_reference.ox = origin.x;
+                pending_reference.oy = origin.y;
+                pending_reference.cx = column.x;
+                pending_reference.cy = column.y;
+                pending_reference.rx = row.x;
+                pending_reference.ry = row.y;
+                current_cell.references.push_back(std::move(pending_reference));
             }
             element_kind = -1;
             pending_sname.clear();
-            pending_xy.clear();
+            pending_point_count = 0;
             break;
         case 0x07:  // ENDSTR
             if (current_name.empty()) {
                 throw std::runtime_error("cell missing STRNAME");
             }
             if (cells.count(current_name)) oracle_reuse_eligible = false;
-            cells[current_name] = current_cell;
+            cells.insert_or_assign(current_name, std::move(current_cell));
             current_name.clear();
             current_cell = Cell{};
             break;
         case 0x04:  // ENDLIB
             saw_endlib = true;
-            if (offset != data.size()) oracle_reuse_eligible = false;
+            if (offset != file.size) oracle_reuse_eligible = false;
             break;
         case 0x00:  // HEADER
         case 0x01:  // BGNLIB
@@ -474,7 +542,7 @@ std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligi
             break;
         }
     }
-    if (offset != data.size()) {
+    if (offset != file.size) {
         throw std::runtime_error("trailing partial GDS record");
     }
     if (!saw_endlib) oracle_reuse_eligible = false;
@@ -539,37 +607,158 @@ struct Placement {
     }
 };
 
-void append_placed_polygon(std::vector<Polygon>& out, const Polygon& polygon, const Placement& placement) {
-    // A rotation/translation preserves vertex distinctness and signed area.
-    Polygon placed{polygon.layer, polygon.datatype, {}, {}, polygon.flags};
-    placed.points.reserve(polygon.points.size());
-    for (const auto& point : polygon.points) {
-        placed.points.push_back(placement.apply(point));
-    }
-    const auto low = placement.apply({polygon.bbox.x0, polygon.bbox.y0});
-    const auto high = placement.apply({polygon.bbox.x1, polygon.bbox.y1});
-    placed.bbox = BBox{std::min(low.x, high.x), std::min(low.y, high.y), std::max(low.x, high.x), std::max(low.y, high.y)};
-    out.push_back(std::move(placed));
-}
-
-void flatten_cell(
-    const std::string& name,
-    const std::map<std::string, Cell>& cells,
-    std::vector<Polygon>& out,
-    std::set<std::string>& visiting,
-    const Placement& placement) {
-    if (visiting.count(name)) {
+void resolve_reachable_cells(Cell& cell, std::map<std::string, Cell>& cells, std::vector<Cell*>& reachable) {
+    if (cell.visiting) {
         throw std::runtime_error("cell reference cycle detected");
     }
-    const auto found = cells.find(name);
-    if (found == cells.end()) {
-        throw std::runtime_error("unresolved reference");
+    if (cell.visited) {
+        return;
     }
-    visiting.insert(name);
-    for (const auto& polygon : found->second.polygons) {
-        append_placed_polygon(out, polygon, placement);
+    cell.visiting = true;
+    reachable.push_back(&cell);
+    for (auto& reference : cell.references) {
+        const auto found = cells.find(reference.child);
+        if (found == cells.end()) {
+            throw std::runtime_error("unresolved reference");
+        }
+        reference.target = &found->second;
+        resolve_reachable_cells(*reference.target, cells, reachable);
     }
-    for (const auto& reference : found->second.references) {
+    cell.visiting = false;
+    cell.visited = true;
+}
+
+struct PolygonSpan {
+    Polygon* polygons;
+    std::size_t count;
+};
+
+struct EmitTile {
+    const Polygon* polygons;
+    std::size_t count;
+    Placement placement;
+    std::uint64_t polygon_start;
+    std::uint64_t vertex_start;
+    std::uint64_t source_start;
+};
+
+struct PackingPlan {
+    std::map<std::string, Cell> cells;
+    std::unique_ptr<LocalPoint[]> points;
+    std::vector<Layer> layers;
+    std::vector<EmitTile> tiles;
+    std::uint64_t polygon_count = 0;
+    std::uint64_t vertex_count = 0;
+    std::uint64_t source_count = 0;
+    bool oracle_reuse_eligible = true;
+    unsigned workers = 1;
+};
+
+constexpr std::size_t kPolygonBlockSize = 2048;
+
+void normalize_cells(PackingPlan& plan, const std::vector<Cell*>& reachable, const FileBytes& file, std::size_t capacity) {
+    plan.points.reset(new LocalPoint[capacity]);
+    std::vector<PolygonSpan> spans;
+    for (auto* cell : reachable) {
+        for (std::size_t start = 0; start < cell->polygons.size(); start += kPolygonBlockSize) {
+            const auto count = std::min(kPolygonBlockSize, cell->polygons.size() - start);
+            spans.push_back({cell->polygons.data() + start, count});
+            cell->blocks.push_back({start, start + count});
+        }
+    }
+    parallel_ranges(spans.size(), 2, plan.workers, [&](std::size_t begin, std::size_t end) {
+        for (auto i = begin; i < end; ++i) {
+            for (std::size_t j = 0; j < spans[i].count; ++j) {
+                normalize_polygon(spans[i].polygons[j], file.data.get(), plan.points.get());
+            }
+        }
+    });
+}
+
+void assign_layer_ids(
+    PackingPlan& plan, const std::vector<Cell*>& reachable, const std::vector<Layer>& selected, bool all_layers) {
+    std::map<Layer, std::uint32_t> ids;
+    for (const auto* cell : reachable) {
+        Layer previous{};
+        bool have_previous = false;
+        for (const auto& polygon : cell->polygons) {
+            if (!have_previous || polygon.layer != previous) {
+                previous = polygon.layer;
+                have_previous = true;
+                if (all_layers || std::binary_search(selected.begin(), selected.end(), polygon.layer)) {
+                    ids.emplace(polygon.layer, 0);
+                }
+            }
+        }
+    }
+    for (auto& [layer, id] : ids) {
+        id = static_cast<std::uint32_t>(plan.layers.size());
+        plan.layers.push_back(layer);
+    }
+
+    parallel_ranges(reachable.size(), 2, plan.workers, [&](std::size_t begin, std::size_t end) {
+        const auto& layer_ids = ids;
+        for (auto i = begin; i < end; ++i) {
+            auto& cell = *reachable[i];
+            if (cell.polygons.empty()) continue;
+            const auto& first = cell.polygons.front();
+            auto bounds = BBox{first.low.x, first.low.y, first.high.x, first.high.y};
+            Layer previous = first.layer;
+            auto layer = layer_ids.find(previous);
+            for (auto& block : cell.blocks) {
+                for (auto j = block.begin; j < block.end; ++j) {
+                    auto& polygon = cell.polygons[j];
+                    if (polygon.layer != previous) {
+                        previous = polygon.layer;
+                        layer = layer_ids.find(previous);
+                    }
+                    if (layer != layer_ids.end()) {
+                        polygon.layer_id = layer->second;
+                        ++block.polygon_count;
+                        block.vertex_count += polygon.point_count;
+                    }
+                    bounds.x0 = std::min<std::int64_t>(bounds.x0, polygon.low.x);
+                    bounds.y0 = std::min<std::int64_t>(bounds.y0, polygon.low.y);
+                    bounds.x1 = std::max<std::int64_t>(bounds.x1, polygon.high.x);
+                    bounds.y1 = std::max<std::int64_t>(bounds.y1, polygon.high.y);
+                }
+            }
+            cell.bbox = bounds;
+        }
+    });
+}
+
+void add_count(std::uint64_t& count, std::uint64_t extra) {
+    if (extra > std::numeric_limits<std::uint64_t>::max() - count) {
+        throw std::overflow_error("flattened geometry count overflow");
+    }
+    count += extra;
+}
+
+void plan_placement(PackingPlan& plan, const Cell& cell, const Placement& placement) {
+    if (!cell.polygons.empty()) {
+        // Checking the cell extrema also proves each vertex can be transformed in int64.
+        const auto low = placement.apply({cell.bbox.x0, cell.bbox.y0});
+        const auto high = placement.apply({cell.bbox.x1, cell.bbox.y1});
+        constexpr std::int64_t limit = 1ll << 40;
+        if (std::min({low.x, low.y, high.x, high.y}) < -limit ||
+            std::max({low.x, low.y, high.x, high.y}) > limit) {
+            plan.oracle_reuse_eligible = false;
+        }
+        const auto source_start = plan.source_count;
+        add_count(plan.source_count, cell.polygons.size());
+        for (const auto& block : cell.blocks) {
+            if (block.polygon_count) {
+                plan.tiles.push_back({
+                    cell.polygons.data() + block.begin, block.end - block.begin, placement,
+                    plan.polygon_count, plan.vertex_count, source_start + block.begin,
+                });
+                add_count(plan.polygon_count, block.polygon_count);
+                add_count(plan.vertex_count, block.vertex_count);
+            }
+        }
+    }
+    for (const auto& reference : cell.references) {
         const std::uint64_t columns = std::max<std::uint64_t>(1, reference.columns);
         const std::uint64_t rows = std::max<std::uint64_t>(1, reference.rows);
         if (placement.quarter_turns != 0 &&
@@ -590,130 +779,191 @@ void flatten_cell(
                 const std::int64_t child_y = reference.oy + static_cast<std::int64_t>(column) * col_dy
                     + static_cast<std::int64_t>(row) * row_dy;
                 const Placement child{(placement.quarter_turns + reference.quarter_turns) % 4, placement.apply({child_x, child_y})};
-                flatten_cell(reference.child, cells, out, visiting, child);
+                plan_placement(plan, *reference.target, child);
             }
         }
     }
-    visiting.erase(name);
+}
+
+struct GdsPolygonExtractPlanInfo {
+    std::uint64_t polygon_count;
+    std::uint64_t vertex_count;
+    std::uint64_t layer_count;
+    double read_s;
+    double scan_s;
+    double normalize_s;
+    double layer_table_s;
+    double placement_s;
+    std::uint32_t oracle_reuse_eligible;
+};
+
+struct GdsPolygonExtractArrays {
+    std::int64_t* vertices_xy;
+    std::uint64_t* polygon_offsets;
+    std::uint32_t* layer_ids;
+    std::int64_t* bboxes;
+    std::uint32_t* flags;
+    std::uint64_t* source_ids;
+    std::uint64_t* hashes;
+    std::int32_t* layer_pairs;
+};
+
+template<unsigned Turns>
+Point transform(LocalPoint point, Point origin) {
+    if constexpr (Turns == 1) return {origin.x - point.y, origin.y + point.x};
+    if constexpr (Turns == 2) return {origin.x - point.x, origin.y - point.y};
+    if constexpr (Turns == 3) return {origin.x + point.y, origin.y - point.x};
+    return {origin.x + point.x, origin.y + point.y};
+}
+
+template<unsigned Turns>
+void emit_tile(
+    const EmitTile& tile, const LocalPoint* points, const GdsPolygonExtractArrays& out) {
+    auto index = tile.polygon_start;
+    auto offset = tile.vertex_start;
+    for (std::size_t i = 0; i < tile.count; ++i) {
+        const auto& polygon = tile.polygons[i];
+        if (polygon.layer_id == kUnselectedLayer) continue;
+        const auto a = transform<Turns>(polygon.low, tile.placement.origin);
+        const auto b = transform<Turns>(polygon.high, tile.placement.origin);
+        const BBox bbox{std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y)};
+        out.polygon_offsets[index] = offset;
+        out.layer_ids[index] = polygon.layer_id;
+        out.bboxes[index * 4 + 0] = bbox.x0;
+        out.bboxes[index * 4 + 1] = bbox.y0;
+        out.bboxes[index * 4 + 2] = bbox.x1;
+        out.bboxes[index * 4 + 3] = bbox.y1;
+        out.flags[index] = polygon.flags;
+        out.source_ids[index] = tile.source_start + i;
+        auto* xy = out.vertices_xy + 2 * offset;
+        const auto* local = points + polygon.point_offset;
+        for (std::uint32_t j = 0; j < polygon.point_count; ++j) {
+            const auto vertex = transform<Turns>(local[j], tile.placement.origin);
+            xy[2 * j] = vertex.x;
+            xy[2 * j + 1] = vertex.y;
+        }
+        if (out.hashes) {
+            const auto hash = canonical_polygon_hash({xy, polygon.point_count}, bbox, polygon.flags);
+            out.hashes[2 * index] = hash.first;
+            out.hashes[2 * index + 1] = hash.second;
+        }
+        offset += polygon.point_count;
+        ++index;
+    }
 }
 
 }  // namespace
 
 extern "C" {
 
-struct GdsPolygonExtractResult {
-    std::uint64_t polygon_count;
-    std::uint64_t vertex_count;
-    std::int64_t* vertices_xy;
-    std::uint64_t* polygon_offsets;
-    std::int32_t* layers;
-    std::int32_t* datatypes;
-    std::int64_t* bboxes;
-    std::uint32_t* flags;
-    std::uint64_t* source_ids;
-    std::uint64_t* hashes;
-    std::uint32_t oracle_reuse_eligible;
-};
-
 const char* gds_polygon_extract_last_error() {
     return g_last_error.c_str();
 }
 
-void gds_polygon_extract_free(GdsPolygonExtractResult* result) {
-    if (!result) {
-        return;
-    }
-    std::free(result->vertices_xy);
-    std::free(result->polygon_offsets);
-    std::free(result->layers);
-    std::free(result->datatypes);
-    std::free(result->bboxes);
-    std::free(result->flags);
-    std::free(result->source_ids);
-    std::free(result->hashes);
-    *result = GdsPolygonExtractResult{};
+void gds_polygon_extract_plan_free(void* plan) {
+    delete static_cast<PackingPlan*>(plan);
 }
 
-int gds_polygon_extract(const char* path, const char* top_name, GdsPolygonExtractResult* out) {
+int gds_polygon_extract_plan(
+    const char* path, const char* top_name, const std::int32_t* selected_pairs, std::uint64_t selected_count,
+    bool all_layers, unsigned workers, GdsPolygonExtractPlanInfo* info, void** out) {
     try {
-        if (!path || !out) {
+        if (!path || !info || !out || (selected_count && !selected_pairs)) {
             throw std::runtime_error("invalid arguments");
         }
-        *out = GdsPolygonExtractResult{};
-        bool oracle_reuse_eligible = true;
-        const auto cells = parse_gds(path, oracle_reuse_eligible);
-        if (cells.empty()) {
+        *out = nullptr;
+        *info = GdsPolygonExtractPlanInfo{};
+        auto plan = std::make_unique<PackingPlan>();
+        plan->workers = std::max(1u, workers);
+
+        auto start = Clock::now();
+        const auto file = read_file(path);
+        info->read_s = elapsed(start);
+        start = Clock::now();
+        std::size_t point_capacity = 0;
+        plan->cells = parse_gds(file, plan->oracle_reuse_eligible, point_capacity);
+        if (plan->cells.empty()) {
             throw std::runtime_error("no cells found");
         }
-        const auto top = select_top(cells, top_name);
-        std::vector<Polygon> polygons;
-        std::set<std::string> visiting;
-        flatten_cell(top, cells, polygons, visiting, Placement{});
+        const auto top_name_resolved = select_top(plan->cells, top_name);
+        auto& top = plan->cells.at(top_name_resolved);
+        std::vector<Cell*> reachable;
+        resolve_reachable_cells(top, plan->cells, reachable);
+        info->scan_s = elapsed(start);
 
-        std::uint64_t vertex_count = 0;
-        for (const auto& polygon : polygons) {
-            if (vertex_count > std::numeric_limits<std::uint64_t>::max() - polygon.points.size()) {
-                throw std::overflow_error("vertex count overflow");
-            }
-            vertex_count += static_cast<std::uint64_t>(polygon.points.size());
-            constexpr std::int64_t max_oracle_reuse_coordinate = 1ll << 40;
-            if (polygon.bbox.x0 < -max_oracle_reuse_coordinate || polygon.bbox.y0 < -max_oracle_reuse_coordinate ||
-                polygon.bbox.x1 > max_oracle_reuse_coordinate || polygon.bbox.y1 > max_oracle_reuse_coordinate) {
-                oracle_reuse_eligible = false;
-            }
+        start = Clock::now();
+        normalize_cells(*plan, reachable, file, point_capacity);
+        info->normalize_s = elapsed(start);
+
+        start = Clock::now();
+        std::vector<Layer> selected;
+        for (std::uint64_t i = 0; i < selected_count; ++i) {
+            selected.emplace_back(selected_pairs[2 * i], selected_pairs[2 * i + 1]);
         }
-        out->oracle_reuse_eligible = oracle_reuse_eligible ? 1 : 0;
-        out->polygon_count = static_cast<std::uint64_t>(polygons.size());
-        out->vertex_count = vertex_count;
-        out->polygon_offsets = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * (polygons.size() + 1)));
-        out->vertices_xy = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * vertex_count * 2));
-        out->layers = static_cast<std::int32_t*>(std::malloc(sizeof(std::int32_t) * polygons.size()));
-        out->datatypes = static_cast<std::int32_t*>(std::malloc(sizeof(std::int32_t) * polygons.size()));
-        out->bboxes = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * polygons.size() * 4));
-        out->flags = static_cast<std::uint32_t*>(std::malloc(sizeof(std::uint32_t) * polygons.size()));
-        out->source_ids = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * polygons.size()));
-        out->hashes = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * polygons.size() * 2));
-        if (!out->polygon_offsets || (!out->vertices_xy && vertex_count) || (!out->layers && !polygons.empty())
-            || (!out->datatypes && !polygons.empty()) || (!out->bboxes && !polygons.empty())
-            || (!out->flags && !polygons.empty()) || (!out->source_ids && !polygons.empty())
-            || (!out->hashes && !polygons.empty())) {
-            throw std::bad_alloc();
+        assign_layer_ids(*plan, reachable, selected, all_layers);
+        info->layer_table_s = elapsed(start);
+
+        start = Clock::now();
+        plan_placement(*plan, top, Placement{});
+        const auto max_bytes = std::numeric_limits<std::ptrdiff_t>::max();
+        if (plan->vertex_count > max_bytes / (2 * sizeof(std::int64_t)) ||
+            plan->polygon_count > max_bytes / (4 * sizeof(std::int64_t))) {
+            throw std::overflow_error("flattened geometry arrays are too large");
         }
-        std::uint64_t vertex_offset = 0;
-        out->polygon_offsets[0] = 0;
-        for (std::size_t index = 0; index < polygons.size(); ++index) {
-            const auto& polygon = polygons[index];
-            out->layers[index] = polygon.layer;
-            out->datatypes[index] = polygon.datatype;
-            out->bboxes[index * 4 + 0] = polygon.bbox.x0;
-            out->bboxes[index * 4 + 1] = polygon.bbox.y0;
-            out->bboxes[index * 4 + 2] = polygon.bbox.x1;
-            out->bboxes[index * 4 + 3] = polygon.bbox.y1;
-            out->flags[index] = polygon.flags;
-            out->source_ids[index] = static_cast<std::uint64_t>(index);
-            const auto hash = canonical_polygon_hash(polygon);
-            out->hashes[index * 2 + 0] = hash.first;
-            out->hashes[index * 2 + 1] = hash.second;
-            for (const auto& point : polygon.points) {
-                out->vertices_xy[vertex_offset * 2 + 0] = point.x;
-                out->vertices_xy[vertex_offset * 2 + 1] = point.y;
-                ++vertex_offset;
-            }
-            out->polygon_offsets[index + 1] = vertex_offset;
-        }
+        info->placement_s = elapsed(start);
+        info->polygon_count = plan->polygon_count;
+        info->vertex_count = plan->vertex_count;
+        info->layer_count = plan->layers.size();
+        info->oracle_reuse_eligible = plan->oracle_reuse_eligible;
+        *out = plan.release();
         g_last_error.clear();
         return 0;
     } catch (const std::exception& exc) {
         g_last_error = exc.what();
-        if (out) {
-            gds_polygon_extract_free(out);
-        }
         return 1;
     } catch (...) {
         g_last_error = "unknown native polygon extract error";
-        if (out) {
-            gds_polygon_extract_free(out);
+        return 1;
+    }
+}
+
+int gds_polygon_extract_emit(const void* handle, const GdsPolygonExtractArrays* out, double* pack_s) {
+    try {
+        if (!handle || !out || !pack_s) {
+            throw std::runtime_error("invalid arguments");
         }
+        const auto& plan = *static_cast<const PackingPlan*>(handle);
+        if (!out->polygon_offsets ||
+            (plan.polygon_count && (!out->layer_ids || !out->bboxes || !out->flags || !out->source_ids)) ||
+            (plan.vertex_count && !out->vertices_xy) || (!plan.layers.empty() && !out->layer_pairs)) {
+            throw std::runtime_error("missing polygon output array");
+        }
+        const auto start = Clock::now();
+        for (std::size_t i = 0; i < plan.layers.size(); ++i) {
+            out->layer_pairs[2 * i] = plan.layers[i].first;
+            out->layer_pairs[2 * i + 1] = plan.layers[i].second;
+        }
+        // Tiles own disjoint output ranges, including each polygon's start offset.
+        parallel_ranges(plan.tiles.size(), 2, plan.workers, [&](std::size_t begin, std::size_t end) {
+            for (auto i = begin; i < end; ++i) {
+                const auto& tile = plan.tiles[i];
+                switch (tile.placement.quarter_turns) {
+                case 1: emit_tile<1>(tile, plan.points.get(), *out); break;
+                case 2: emit_tile<2>(tile, plan.points.get(), *out); break;
+                case 3: emit_tile<3>(tile, plan.points.get(), *out); break;
+                default: emit_tile<0>(tile, plan.points.get(), *out); break;
+                }
+            }
+        });
+        out->polygon_offsets[plan.polygon_count] = plan.vertex_count;
+        *pack_s = elapsed(start);
+        g_last_error.clear();
+        return 0;
+    } catch (const std::exception& exc) {
+        g_last_error = exc.what();
+        return 1;
+    } catch (...) {
+        g_last_error = "unknown native polygon packing error";
         return 1;
     }
 }

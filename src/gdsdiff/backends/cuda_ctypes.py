@@ -60,6 +60,7 @@ class _CPolygonRecordDeltaResult(ctypes.Structure):
         ("reduced_key_count", ctypes.c_uint64),
         ("cuda_kernel_count", ctypes.c_uint64),
         ("cuda_event_elapsed_ms", ctypes.c_float),
+        ("h2d_upload_s", ctypes.c_double),
     ]
 
 
@@ -130,6 +131,7 @@ class CudaPolygonRecordDelta:
     cuda_kernel_count: int
     cuda_event_elapsed_s: float
     transferred_bytes: int
+    h2d_upload_s: float = 0.0
 
     @property
     def record_count(self) -> int:
@@ -291,6 +293,7 @@ def run_cuda_polygon_record_delta(old_buffer: PolygonBuffer, new_buffer: Polygon
             cuda_kernel_count=int(result.cuda_kernel_count),
             cuda_event_elapsed_s=float(result.cuda_event_elapsed_ms) / 1000.0,
             transferred_bytes=_polygon_record_transfer_bytes(old_packed, new_packed),
+            h2d_upload_s=float(result.h2d_upload_s),
         )
     finally:
         library.gds_cuda_free_polygon_record_delta_result(ctypes.byref(result))
@@ -342,6 +345,7 @@ def run_cuda_polygon_record_delta_from_hashes(old_buffer: PolygonBuffer, new_buf
             cuda_kernel_count=int(result.cuda_kernel_count),
             cuda_event_elapsed_s=float(result.cuda_event_elapsed_ms) / 1000.0,
             transferred_bytes=_polygon_record_transfer_bytes(old_packed, new_packed),
+            h2d_upload_s=float(result.h2d_upload_s),
         )
     finally:
         library.gds_cuda_free_polygon_record_delta_result(ctypes.byref(result))

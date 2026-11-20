@@ -7,10 +7,12 @@ from collections import Counter
 from pathlib import Path
 
 import gdstk
+import numpy as np
 import pytest
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
+from gdsdiff.backends import polygon_extract_ctypes
 from gdsdiff.backends.polygon_extract_ctypes import (
     PolygonExtractCtypesUnavailable,
     extract_gds_polygons_native,
@@ -113,6 +115,49 @@ def test_native_polygon_extract_filters_layers(tmp_path):
     assert native.buffer.layer_table.layers == (LayerSpec(2, 0),)
 
 
+def test_native_packing_is_ordered_across_workers_and_layer_filters(tmp_path, monkeypatch):
+    path = tmp_path / "repeated.gds"
+    lib = gdstk.Library(unit=1e-6, precision=1e-6)
+    child = lib.new_cell("child")
+    layers = [(13, 3), (2, 4), (2, 1)]
+    for i in range(8197):
+        layer, datatype = layers[i % len(layers)]
+        child.add(gdstk.Polygon([(3 * i, 0), (3 * i + 2, 0), (3 * i + 1, 2)], layer=layer, datatype=datatype))
+    top = lib.new_cell("top")
+    top.add(gdstk.rectangle((0, 0), (1, 1), layer=21))
+    top.add(gdstk.Reference(child, (40, -5), rotation=math.pi / 2), gdstk.Reference(child, (-10, 8)))
+    lib.new_cell("unreachable").add(gdstk.rectangle((0, 0), (2, 2), layer=99))
+    lib.write_gds(path)
+
+    monkeypatch.setattr(polygon_extract_ctypes, "_workers_per_input", lambda: 1)
+    serial = extract_gds_polygons_native(path, top_name="top").buffer
+    assert serial.layer_table.layers == (LayerSpec(2, 1), LayerSpec(2, 4), LayerSpec(13, 3), LayerSpec(21, 0))
+    np.testing.assert_array_equal(serial.source_ids, np.arange(2 * 8197 + 1))
+    np.testing.assert_array_equal(serial.polygon_vertices(1), [[40, -5], [40, -3], [38, -4]])
+    np.testing.assert_array_equal(serial.polygon_vertices(8198), [[-10, 8], [-8, 8], [-9, 10]])
+
+    monkeypatch.setattr(polygon_extract_ctypes, "_workers_per_input", lambda: 4)
+    parallel = extract_gds_polygons_native(path, top_name="top", compute_hashes=False).buffer
+    assert parallel.layer_table == serial.layer_table
+    assert parallel.polygon_hashes is None
+    for field in ("vertices_xy", "polygon_offsets", "bboxes", "layer_ids", "flags", "source_ids"):
+        np.testing.assert_array_equal(getattr(parallel, field), getattr(serial, field))
+
+    selected = extract_gds_polygons_native(path, top_name="top", layers="13:3,2:1").buffer
+    keep = np.flatnonzero(np.isin(serial.layer_ids, [0, 2]))
+    assert selected.layer_table.layers == (LayerSpec(2, 1), LayerSpec(13, 3))
+    np.testing.assert_array_equal(selected.layer_ids, serial.layer_ids[keep] // 2)
+    np.testing.assert_array_equal(selected.polygon_offsets, np.arange(len(keep) + 1) * 3)
+    np.testing.assert_array_equal(selected.vertices_xy, np.vstack([serial.polygon_vertices(i) for i in keep]))
+    for field in ("bboxes", "flags", "source_ids", "polygon_hashes"):
+        np.testing.assert_array_equal(getattr(selected, field), getattr(serial, field)[keep])
+
+    empty = extract_gds_polygons_native(path, top_name="top", layers="65538:1").buffer
+    assert empty.polygon_count == empty.vertex_count == 0
+    assert empty.layer_table.layers == ()
+    assert empty.polygon_offsets.tolist() == [0]
+
+
 def test_native_polygon_extract_preserves_degenerate_polygon_records(tmp_path):
     path = tmp_path / "degenerate.gds"
     lib = gdstk.Library(unit=1e-6, precision=1e-9)
@@ -128,6 +173,21 @@ def test_native_polygon_extract_preserves_degenerate_polygon_records(tmp_path):
     assert [int(flag) for flag in native.buffer.flags] == [int(flag) for flag in reference.buffer.flags]
     assert int(native.buffer.flags[0]) & FLAG_ZERO_AREA
     assert not (int(native.buffer.flags[0]) & FLAG_FEWER_THAN_THREE_POINTS)
+
+
+def test_native_normalization_preserves_duplicates_and_wide_area_rules(tmp_path):
+    path = tmp_path / "normalized.gds"
+    lib = gdstk.Library(unit=1e-9, precision=1e-9)
+    top = lib.new_cell("top")
+    top.add(gdstk.Polygon([(0, 0), (0, 0), (2, 2), (0, 0), (2, 2), (0, 0)]))
+    top.add(gdstk.rectangle((-2_000_000_000, -2_000_000_000), (2_000_000_000, 2_000_000_000)))
+    lib.write_gds(path)
+
+    native = extract_gds_polygons_native(path)
+    reference = extract_gds_polygons(path)
+    assert _polygon_records(native) == _polygon_records(reference)
+    assert native.buffer.flags.tolist() == [FLAG_FEWER_THAN_THREE_POINTS | FLAG_ZERO_AREA, 0]
+    np.testing.assert_array_equal(native.buffer.polygon_vertices(0), [[0, 0], [2, 2], [0, 0], [2, 2]])
 
 
 def test_native_polygon_extract_matches_chip_fixture_record_counts():

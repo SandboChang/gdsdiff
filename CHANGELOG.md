@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Prepare native polygon buffers in parallel without intermediate flattened
+  polygons or redundant host hashing on the uncached CUDA path. Report input
+  preparation phases and CUDA record upload time separately.
+
 ## 0.2.0
 
 - Support unit-magnification, orthogonally rotated GDS references in the

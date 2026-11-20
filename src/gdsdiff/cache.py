@@ -61,6 +61,7 @@ class CachedNativePolygonExtraction:
 
     def to_timing_json(self, prefix: str) -> dict[str, float | bool | str]:
         return {
+            **self.extraction.to_timing_json(prefix),
             f"{prefix}_native_polygon_cache_hit": self.cache_hit,
             f"{prefix}_native_polygon_cache_load_s": self.load_s,
             f"{prefix}_native_polygon_cache_build_s": self.build_s,

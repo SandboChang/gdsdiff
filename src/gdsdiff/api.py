@@ -1260,13 +1260,14 @@ def _try_gpu_polygon_evidence_path(
         coverage_failures: list[dict[str, str]] = []
         old_native = None
         new_native = None
-        native_cache_timings: dict[str, object] = {}
+        native_input_timings: dict[str, object] = {}
         try:
             _validate_native_comparison_grid(config)
-            old_native, new_native, native_cache_timings = _gpu_polygon_native_inputs(
+            old_native, new_native, native_input_timings = _gpu_polygon_native_inputs(
                 config,
                 old_top_name=old_top_name,
                 new_top_name=new_top_name,
+                compute_hashes=gpu_name != Backend.CUDA.value,
             )
         except _GpuComparisonUnavailable as exc:
             parse_failures.append({"stage": "native-grid", "reason": str(exc)})
@@ -1280,10 +1281,11 @@ def _try_gpu_polygon_evidence_path(
                 old_top_name = common_top
                 new_top_name = common_top
                 try:
-                    old_native, new_native, native_cache_timings = _gpu_polygon_native_inputs(
+                    old_native, new_native, native_input_timings = _gpu_polygon_native_inputs(
                         config,
                         old_top_name=old_top_name,
                         new_top_name=new_top_name,
+                        compute_hashes=gpu_name != Backend.CUDA.value,
                     )
                 except (PolygonExtractCtypesUnavailable, MemoryError, OSError) as retry_exc:
                     parse_failures.append({"stage": "native-parse", "reason": str(retry_exc) or type(retry_exc).__name__})
@@ -1323,7 +1325,7 @@ def _try_gpu_polygon_evidence_path(
             "metal_release_s": 0.0,
             "polygon_inventory_delta_s": 0.0,
         }
-        timings.update(native_cache_timings)
+        timings.update(native_input_timings)
         gpu_cleaned = False
         cleanup_warnings: tuple[str, ...] = ()
         if old_native is not None and new_native is not None:
@@ -1352,6 +1354,7 @@ def _try_gpu_polygon_evidence_path(
                         record_delta = run_metal_polygon_record_delta_from_hashes(old_native.buffer, new_native.buffer)
                     else:
                         record_delta = run_cuda_polygon_record_delta(old_native.buffer, new_native.buffer)
+                        timings["h2d_upload_s"] = record_delta.h2d_upload_s
                     timings["gpu_source_record_delta_s"] = perf_counter() - record_start
                 except (CudaCtypesUnavailable, MetalCtypesUnavailable, MemoryError, OSError) as record_exc:
                     record_delta_failures.append({"stage": "gpu-record-delta", "reason": str(record_exc) or type(record_exc).__name__})
@@ -1936,20 +1939,19 @@ def _gpu_polygon_native_inputs(
     *,
     old_top_name: str | None,
     new_top_name: str | None,
+    compute_hashes: bool,
 ):
     if config.geometry_cache_dir is None:
-        old_extract_args = (config.old_path, old_top_name, config.layers)
-        new_extract_args = (config.new_path, new_top_name, config.layers)
+        old_extract_args = (config.old_path, old_top_name, config.layers, compute_hashes)
+        new_extract_args = (config.new_path, new_top_name, config.layers, compute_hashes)
         if _should_extract_pair_in_parallel(config):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 old_future = executor.submit(_extract_native_one, old_extract_args)
                 new_future = executor.submit(_extract_native_one, new_extract_args)
-                return old_future.result(), new_future.result(), {}
-        return (
-            _extract_native_one(old_extract_args),
-            _extract_native_one(new_extract_args),
-            {},
-        )
+                old, new = old_future.result(), new_future.result()
+        else:
+            old, new = _extract_native_one(old_extract_args), _extract_native_one(new_extract_args)
+        return old, new, old.to_timing_json("old") | new.to_timing_json("new")
     old_cache_args = (config.geometry_cache_dir, config.old_path, old_top_name, config.layers)
     new_cache_args = (config.geometry_cache_dir, config.new_path, new_top_name, config.layers)
     if _should_extract_pair_in_parallel(config):
@@ -1984,8 +1986,8 @@ def _native_buffers_rectangle_coverage_eligible(*buffers: PolygonBuffer) -> bool
 
 
 def _extract_native_one(args):
-    path, top_name, layers = args
-    return extract_gds_polygons_native(path, top_name=top_name, layers=layers)
+    path, top_name, layers, compute_hashes = args
+    return extract_gds_polygons_native(path, top_name=top_name, layers=layers, compute_hashes=compute_hashes)
 
 
 def _cached_native_polygon_one(args):

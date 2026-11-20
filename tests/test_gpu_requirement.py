@@ -140,6 +140,12 @@ def test_gpu_required_rotation_only_change_matches_cpu_audit(tmp_path):
     assert result.status == CompareStatus.DIFFERENCES_FOUND
     assert result.report.backend["gpu_requirement_met"] is True
     assert result.report.backend["cuda_event_elapsed_s"] > 0
+    timings = result.report.timings
+    assert not timings["old_native_polygon_cpu_hashes"]
+    assert not timings["new_native_polygon_cpu_hashes"]
+    for phase in ("read", "scan", "normalize", "layer_table", "placement", "pack"):
+        assert 0 <= timings[f"old_native_polygon_{phase}_s"] <= timings["native_parse_s"]
+    assert 0 < timings["h2d_upload_s"] <= timings["gpu_source_record_delta_s"]
     assert result.report.exact_fallback["cpu_oracle_audit"]["match"] is True
     assert not result.report.exact_fallback["source_edge_cpu_oracle_fallback"]
 

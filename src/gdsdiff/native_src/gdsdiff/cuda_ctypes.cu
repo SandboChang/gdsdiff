@@ -16,6 +16,7 @@
 #include <thrust/unique.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -2582,6 +2583,7 @@ struct GdsCudaPolygonRecordDeltaResult {
     std::uint64_t reduced_key_count;
     std::uint64_t cuda_kernel_count;
     float cuda_event_elapsed_ms;
+    double h2d_upload_s;
 };
 
 struct GdsCudaBoundaryLoopResult {
@@ -2799,6 +2801,7 @@ int gds_cuda_polygon_record_delta(
         DeviceBuffer<std::int64_t> d_new_bboxes(new_count * 4);
         DeviceBuffer<std::uint32_t> d_new_flags(new_count);
 
+        const auto upload_start = std::chrono::steady_clock::now();
         if (old_count) {
             if (old_vertex_count) {
                 check_cuda(cudaMemcpy(d_old_vertices.get(), old_vertices_xy, sizeof(std::int64_t) * old_vertex_count * 2, cudaMemcpyHostToDevice), "copy old polygon vertices");
@@ -2819,6 +2822,7 @@ int gds_cuda_polygon_record_delta(
             check_cuda(cudaMemcpy(d_new_bboxes.get(), new_bboxes, sizeof(std::int64_t) * new_count * 4, cudaMemcpyHostToDevice), "copy new polygon bboxes");
             check_cuda(cudaMemcpy(d_new_flags.get(), new_flags, sizeof(std::uint32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon flags");
         }
+        result->h2d_upload_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - upload_start).count();
 
         thrust::device_vector<PolygonSideRecord> records(total_count);
         const int threads = 256;
@@ -3018,6 +3022,7 @@ int gds_cuda_polygon_record_delta_from_hashes(
         DeviceBuffer<std::uint32_t> d_new_flags(new_count);
         DeviceBuffer<std::uint64_t> d_new_hashes(new_count * 2);
 
+        const auto upload_start = std::chrono::steady_clock::now();
         if (old_count) {
             check_cuda(cudaMemcpy(d_old_offsets.get(), old_offsets, sizeof(std::uint64_t) * (old_count + 1), cudaMemcpyHostToDevice), "copy old polygon offsets");
             check_cuda(cudaMemcpy(d_old_layers.get(), old_layers, sizeof(std::int32_t) * old_count, cudaMemcpyHostToDevice), "copy old polygon layers");
@@ -3034,6 +3039,7 @@ int gds_cuda_polygon_record_delta_from_hashes(
             check_cuda(cudaMemcpy(d_new_flags.get(), new_flags, sizeof(std::uint32_t) * new_count, cudaMemcpyHostToDevice), "copy new polygon flags");
             check_cuda(cudaMemcpy(d_new_hashes.get(), new_hashes, sizeof(std::uint64_t) * new_count * 2, cudaMemcpyHostToDevice), "copy new polygon hashes");
         }
+        result->h2d_upload_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - upload_start).count();
 
         thrust::device_vector<PolygonSideRecord> records(total_count);
         const int threads = 256;
