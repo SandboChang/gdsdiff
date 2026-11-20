@@ -24,7 +24,27 @@ By default, `gdsdiff` uses `--backend auto`.
   evidence path.
 - If no suitable GPU backend is available, it falls back to the CPU `gdstk`
   oracle while keeping the same neutral evidence contract.
-- Use `--require-gpu` to fail instead of falling back to CPU.
+- If a requested GPU comparison fails, the command reports the stage and tries
+  the exact CPU oracle. With `--require-gpu`, a CPU-only result still returns
+  exit 2. In JSON, `backend.gpu_work_performed` distinguishes actual GPU work
+  from runtime availability, and `exact_fallback.cpu_evidence_status` records
+  the separate CPU verdict. CPU audit and correction after real GPU work are
+  reported separately from CPU-only fallback.
+
+The native GPU evidence path supports translation and unit-magnification
+single references rotated by multiples of 90 degrees with no reflection or
+absolute transform flags. Array references with nonidentity transforms and
+other unsupported records have explicit diagnostics.
+
+For sparse edits on large inputs, the CPU coverage audit can use an aligned
+record reduction after independently reading both full files with `gdstk`. It
+compares integer vertices and retains all common records whose bounds touch a
+changed polygon. The exact backend reports when this reduction was used.
+
+When nested boundaries need hole-aware correction, supported native inputs can
+reuse their already-extracted polygon buffers. An explicit `--audit-cpu-oracle`
+still rereads both files independently and checks the corrected vertices, not
+just the areas. A mismatch in that check fails closed.
 
 `gdsdiff` is the active command name. The earlier GPU-comparator command name
 is no longer an active entry point.

@@ -164,8 +164,8 @@ def _canonical_valid_points(points: tuple[tuple[int, int], ...]) -> tuple[tuple[
 
 
 def _min_cyclic_rotation(points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
-    rotations = [points[index:] + points[:index] for index in range(len(points))]
-    return min(rotations)
+    first_point = min(points)
+    return min(points[index:] + points[:index] for index, point in enumerate(points) if point == first_point)
 
 
 def _encode_points(points: tuple[tuple[int, int], ...], validity: int) -> bytes:

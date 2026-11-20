@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from ._version import __version__
 from .api import compare_gds_files
 from .config import CompareConfig, parse_allowed_region, parse_allowed_whole_layer
+from .inventory import inventory_gds
 from .semantics import Backend, EvidenceEngine, FailurePolicy
 from .templates import extract_template, find_template
 
@@ -20,6 +22,7 @@ def build_parser(
     parser = argparse.ArgumentParser(
         prog=prog,
         description=description or "Compare two GDS files with exact CPU verification.",
+        epilog=f"Inspect a single layout with '{prog} inspect --help'.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("old_gds", type=Path)
@@ -100,7 +103,7 @@ def build_parser(
         type=Path,
         help="Optional cache directory for extracted geometry, canonical IDs, and spatial indexes.",
     )
-    parser.add_argument("--require-gpu", action="store_true", help="Fail instead of falling back to CPU when no GPU backend is available.")
+    parser.add_argument("--require-gpu", action="store_true", help="Return exit 2 if no GPU comparison ran, even if the CPU fallback completed.")
     parser.add_argument("--quiet", action="store_true")
     return parser
 
@@ -124,6 +127,8 @@ def _main(
     general_output: bool,
 ) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "inspect":
+        return _main_inspect(argv[1:], prog=f"{prog} inspect")
     if argv and argv[0] == "extract-template":
         return _main_extract_template(argv[1:], prog=f"{prog} extract-template")
     if argv and argv[0] == "find-template":
@@ -183,6 +188,16 @@ def _main(
         print(f"{prog}: {exc}", file=sys.stderr)
         return 2
 
+    if result.report.exact_fallback.get("mode") in {
+        "cpu-gdstk-oracle-after-gpu-failure", "gpu-record-delta-plus-cpu-oracle-fallback",
+    }:
+        for warning in result.report.warnings:
+            print(f"{prog}: {warning}", file=sys.stderr)
+    elif result.report.backend.get("gpu_work_performed"):
+        for failure in result.report.exact_fallback.get("failures", ()):
+            if failure.get("stage", "").startswith("gpu-"):
+                print(f"{prog}: {failure['stage']}: {failure['reason']}", file=sys.stderr)
+
     if not args.quiet:
         report = result.report.to_json_dict()
         print(
@@ -203,6 +218,38 @@ def _main(
             for name, path in sorted(result.artifacts.items()):
                 print(f"{name}={path}")
     return result.exit_code
+
+
+def _main_inspect(argv: list[str], *, prog: str) -> int:
+    parser = argparse.ArgumentParser(prog=prog, description="List GDS units, cells, layers, and stored records without flattening.")
+    parser.add_argument("gds", type=Path)
+    parser.add_argument("--top", help="Cell to inspect. Defaults to the top-level cell when unambiguous.")
+    parser.add_argument("--json", action="store_true", help="Print the inventory as JSON instead of text.")
+    args = parser.parse_args(argv)
+    try:
+        _validate_input_paths(args.gds)
+        inventory = inventory_gds(args.gds, top_name=args.top)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"{prog}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(inventory.to_json(), indent=2))
+    else:
+        metadata = inventory.metadata
+        records = inventory.records
+        layers = ", ".join(f"{layer.layer}:{layer.datatype}" for layer in inventory.layers)
+        print(f"GDS file: {metadata.path}")
+        print(f"User unit: {metadata.unit_m} m; precision: {metadata.precision_m} m")
+        print(f"Top-level cells: {', '.join(metadata.top_names) or '<none>'}")
+        print(f"Selected cell: {inventory.selected_top}")
+        print(f"Cells: {records.cells} reachable / {metadata.cell_count} in file")
+        print(f"Geometry layers (layer:datatype): {layers or '<none>'}")
+        print(
+            f"Stored records: {records.polygons} polygons, {records.paths} paths, "
+            f"{records.labels} labels, {records.references} references"
+        )
+    return 0
 
 
 def build_extract_template_parser(*, prog: str = "gdsdiff extract-template") -> argparse.ArgumentParser:

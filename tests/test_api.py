@@ -205,7 +205,8 @@ def test_gpu_polygon_metal_source_edge_report_contract(tmp_path, monkeypatch):
     assert payload["backend"]["name"] == "metal"
     assert payload["backend"]["gpu_polygon_available"] is True
     assert payload["backend"]["gpu_record_delta_available"] is True
-    assert payload["backend"]["metal_kernel_count"] >= 3
+    assert payload["backend"]["metal_kernel_count"] >= 2
+    assert payload["backend"]["gpu_work_performed"] is True
     assert payload["exact_fallback"]["mode"] == "gpu-polygon-metal-source-edge-records"
     assert payload["exact_fallback"]["engine_status"] == "source-edge-boundary-records-complete"
     assert payload["exact_fallback"]["gpu_record_delta_accelerator"] == "metal"

@@ -192,6 +192,27 @@ def test_cuda_context_overlap_pairs_match_bbox_layer_predicate():
     assert list(zip(result.component_indices.tolist(), result.polygon_indices.tolist())) == [(0, 0), (1, 2), (2, 3)]
 
 
+def test_cuda_context_overlap_compacts_tiles_in_deterministic_order():
+    if not cuda_ctypes_available():
+        pytest.skip("CUDA ctypes backend is not available")
+    x = np.arange(-5000, 5003, dtype=np.int64)
+    bboxes = np.column_stack((x, x % 23, x + 2, x % 23 + 3))
+    layers = (x % 3).astype(np.int32)
+    datatypes = (x % 2).astype(np.int32)
+    regions = np.asarray([(-8000, 0, 8000, 24), (-905, 2, 4098, 7), (5003, 0, 5010, 30)], dtype=np.int64)
+    region_layers = np.asarray([0, 1, 2], dtype=np.int32)
+    region_datatypes = np.asarray([0, 1, 0], dtype=np.int32)
+    expected = []
+    for index, ((left, bottom, right, top), layer, datatype) in enumerate(zip(regions, region_layers, region_datatypes)):
+        mask = (layers == layer) & (datatypes == datatype) & (bboxes[:, 2] > left) & (bboxes[:, 0] < right)
+        mask &= np.maximum(bboxes[:, 1], bottom) < np.minimum(bboxes[:, 3], top)
+        expected.extend((index, int(polygon)) for polygon in np.flatnonzero(mask))
+
+    for _ in range(3):
+        result = run_cuda_context_overlap_pairs(regions, region_layers, region_datatypes, bboxes, layers, datatypes)
+        assert list(zip(result.component_indices.tolist(), result.polygon_indices.tolist())) == expected
+
+
 def test_cuda_axis_aligned_boundary_edges_cancel_shared_edges():
     if not cuda_ctypes_available():
         pytest.skip("CUDA ctypes backend is not available")

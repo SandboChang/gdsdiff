@@ -11,6 +11,9 @@ contracts include:
   `parse_allowed_region`, and `parse_allowed_whole_layer` for stable selection
   and policy parsing.
 - `read_gds_metadata` and `GdsMetadata` for GDS unit/precision metadata.
+- `inventory_gds` and `GdsInventory` for the selected cell's reachable geometry
+  layers and stored record counts without expanding placements. Labels are
+  counted but do not add geometry layers.
 - `discover_native_capabilities` and `backend_diagnostics` for CPU-safe runtime
   capability inspection.
 

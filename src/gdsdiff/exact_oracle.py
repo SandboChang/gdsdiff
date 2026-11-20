@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable
+
+import numpy as np
 
 from .config import LayerSpec
 from .geometry import PolygonBuffer, polygon_bbox, polygon_twice_area
@@ -144,6 +147,52 @@ def _resolve_worker_count(workers: int | None, layer_count: int) -> int:
     if workers is None:
         workers = os.cpu_count() or 1
     return max(1, int(workers))
+
+
+def _run_aligned_sparse_exact_oracle(old: PolygonBuffer, new: PolygonBuffer) -> ExactOracleResult | None:
+    """Audit a sparse edit on independently extracted, index-aligned records."""
+    if (
+        old.polygon_count == 0
+        or old.layer_table != new.layer_table
+        or not np.array_equal(old.layer_ids, new.layer_ids)
+        or not np.array_equal(old.polygon_offsets, new.polygon_offsets)
+        or np.any(old.polygon_offsets[1:] <= old.polygon_offsets[:-1])
+    ):
+        return None
+    vertex_changes = old.vertices_xy[:, 0] != new.vertices_xy[:, 0]
+    vertex_changes |= old.vertices_xy[:, 1] != new.vertices_xy[:, 1]
+    changed = np.logical_or.reduceat(vertex_changes, old.polygon_offsets[:-1].astype(np.intp))
+    del vertex_changes
+    if np.count_nonzero(changed) > 4096:
+        return None
+
+    # Both sides contain the same off-delta polygons. They can only mask
+    # a difference inside a changed polygon, so keep all same-layer context
+    # whose bbox has closed contact with either side's changed geometry.
+    changed_layers = set(old.layer_ids[changed].tolist())
+    diffs = []
+    for layer_id, layer in enumerate(old.layer_table.layers):
+        if layer_id not in changed_layers:
+            diffs.append(LayerExactDiff(layer))
+            continue
+        layer_indices = np.flatnonzero(old.layer_ids == layer_id)
+        keep = changed[layer_indices]
+        dirty = layer_indices[keep]
+        dirty_boxes = np.unique(np.concatenate((old.bboxes[dirty], new.bboxes[dirty])), axis=0)
+        if len(dirty_boxes) * len(layer_indices) > 1_000_000_000:
+            return None
+        x0, y0, x1, y1 = np.ascontiguousarray(old.bboxes[layer_indices].T)
+        for left, bottom, right, top in dirty_boxes:
+            keep |= (x0 <= right) & (x1 >= left) & (y0 <= top) & (y1 >= bottom)
+        indices = layer_indices[keep]
+        if len(indices) > 20_000:
+            return None
+
+        def points(buffer: PolygonBuffer) -> tuple[tuple[tuple[int, int], ...], ...]:
+            return tuple(tuple((int(x), int(y)) for x, y in buffer.polygon_vertices(index)) for index in indices)
+
+        diffs.append(_exact_layer_diff_task(ExactLayerTask(layer, 1.0, points(old), points(new))))
+    return ExactOracleResult(tuple(sorted(diffs, key=lambda diff: diff.layer)))
 
 
 def _layer_task_specs(
@@ -513,23 +562,30 @@ def _cancel_symmetric_direction_fragments(
 ) -> tuple[tuple[DiffFragment, ...], tuple[DiffFragment, ...]]:
     if not old_fragments or not new_fragments:
         return old_fragments, new_fragments
-    old_counts: dict[tuple[tuple[int, int, int, int], int, tuple[tuple[int, int], ...]], int] = {}
-    new_counts: dict[tuple[tuple[int, int, int, int], int, tuple[tuple[int, int], ...]], int] = {}
-    for fragment in old_fragments:
-        old_counts[_direction_fragment_key(fragment)] = old_counts.get(_direction_fragment_key(fragment), 0) + 1
-    for fragment in new_fragments:
-        new_counts[_direction_fragment_key(fragment)] = new_counts.get(_direction_fragment_key(fragment), 0) + 1
+    common_signatures = {(fragment.bbox, fragment.twice_area) for fragment in old_fragments}.intersection(
+        (fragment.bbox, fragment.twice_area) for fragment in new_fragments
+    )
+    if not common_signatures:
+        return old_fragments, new_fragments
+
+    def keys(fragments):
+        return tuple(
+            _direction_fragment_key(fragment) if (fragment.bbox, fragment.twice_area) in common_signatures else None
+            for fragment in fragments
+        )
+
+    old_keys, new_keys = keys(old_fragments), keys(new_fragments)
+    old_counts = Counter(key for key in old_keys if key is not None)
+    new_counts = Counter(key for key in new_keys if key is not None)
     old_out = []
-    for fragment in old_fragments:
-        key = _direction_fragment_key(fragment)
-        if new_counts.get(key, 0):
+    for fragment, key in zip(old_fragments, old_keys):
+        if new_counts[key]:
             new_counts[key] -= 1
         else:
             old_out.append(fragment)
     new_out = []
-    for fragment in new_fragments:
-        key = _direction_fragment_key(fragment)
-        if old_counts.get(key, 0):
+    for fragment, key in zip(new_fragments, new_keys):
+        if old_counts[key]:
             old_counts[key] -= 1
         else:
             new_out.append(fragment)
@@ -642,8 +698,15 @@ def _fragments_from_gdstk(polygons: list[gdstk.Polygon], origin: tuple[int, int]
     ox, oy = origin
     fragments = []
     for polygon in polygons:
-        points = tuple((snap_to_grid(point[0], 1) + ox, snap_to_grid(point[1], 1) + oy) for point in polygon.points)
-        if not points:
+        vertices = polygon.points
+        if vertices.size == 0:
             continue
+        # Integer DBU output is already snapped. Keep the decimal path for
+        # fractional or out-of-range coordinates.
+        integer_vertices = vertices.astype(np.int64) if np.abs(vertices).max() <= (1 << 52) else None
+        if integer_vertices is not None and np.array_equal(vertices, integer_vertices):
+            points = tuple((x + ox, y + oy) for x, y in integer_vertices.tolist())
+        else:
+            points = tuple((snap_to_grid(x, 1) + ox, snap_to_grid(y, 1) + oy) for x, y in vertices)
         fragments.append(DiffFragment(points=points, bbox=polygon_bbox(points), twice_area=polygon_twice_area(points)))
     return tuple(fragments)

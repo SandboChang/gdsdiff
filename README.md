@@ -36,6 +36,16 @@ differences failed the policy, and `2` means the comparison could not produce
 valid evidence. Reports use factual directions such as `coverage_before_only`
 and `coverage_after_only`.
 
+To check a single file's units, cells, and geometry layers before comparing:
+
+```bash
+python -m gdsdiff inspect layout.gds
+python -m gdsdiff inspect layout.gds --top TOP --json
+```
+
+Inspection counts stored records without expanding reference arrays. Use `--top`
+when the file has more than one top-level cell.
+
 ## Python API
 
 ```python
@@ -72,8 +82,10 @@ debugging guidance.
   decimals (for example, `89,120`). Targets and standard `NVCC_*_FLAGS` are
   included in the content-addressed cache key.
 - Metal requires Apple Silicon/macOS with the Xcode command-line tools.
-- Missing or unusable accelerators fall back to CPU unless `require_gpu=True`
-  is explicitly requested.
+- When a requested accelerator fails, `gdsdiff` reports the failing stage and
+  attempts exact CPU comparison. With `--require-gpu` (Python: `require_gpu=True`),
+  it returns exit 2 if no GPU comparison ran, even if the labeled CPU evidence
+  is complete. A CPU audit after GPU comparison is not a CPU-only fallback.
 
 Installation and import never compile GPU code. Inspect the CUDA toolchain with
 `gdsdiff.inspect_cuda_toolchain()`, then build and verify the optional backend

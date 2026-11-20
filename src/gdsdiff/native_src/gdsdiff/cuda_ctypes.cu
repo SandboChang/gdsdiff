@@ -1,4 +1,6 @@
 #include <cuda_runtime.h>
+#include <cub/block/block_reduce.cuh>
+#include <cub/block/block_scan.cuh>
 #include <thrust/copy.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
@@ -2343,57 +2345,67 @@ __global__ void split_free_required_kernel(
     }
 }
 
-__global__ void context_overlap_flag_kernel(
+constexpr int kContextThreads = 256;
+constexpr std::uint64_t kContextTileSize = 4096;
+
+template <bool Emit>
+__global__ void context_overlap_tile_kernel(
     const std::int64_t* component_bboxes,
     const std::int32_t* component_layers,
     const std::int32_t* component_datatypes,
-    std::uint64_t component_count,
     const std::int64_t* polygon_bboxes,
     const std::int32_t* polygon_layers,
     const std::int32_t* polygon_datatypes,
     std::uint64_t polygon_count,
-    std::uint64_t total_pairs,
-    std::uint64_t* flags) {
-    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
-    for (std::uint64_t linear = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-         linear < total_pairs;
-         linear += stride) {
-        const std::uint64_t component_index = linear / polygon_count;
-        const std::uint64_t polygon_index = linear - component_index * polygon_count;
-        const auto cx0 = component_bboxes[component_index * 4];
-        const auto cy0 = component_bboxes[component_index * 4 + 1];
-        const auto cx1 = component_bboxes[component_index * 4 + 2];
-        const auto cy1 = component_bboxes[component_index * 4 + 3];
-        const auto px0 = polygon_bboxes[polygon_index * 4];
-        const auto py0 = polygon_bboxes[polygon_index * 4 + 1];
-        const auto px1 = polygon_bboxes[polygon_index * 4 + 2];
-        const auto py1 = polygon_bboxes[polygon_index * 4 + 3];
-        const bool same_layer = component_layers[component_index] == polygon_layers[polygon_index]
-            && component_datatypes[component_index] == polygon_datatypes[polygon_index];
-        const bool overlaps = px1 > cx0 && cx1 > px0 && max(py0, cy0) < min(py1, cy1);
-        flags[linear] = same_layer && overlaps ? 1 : 0;
-    }
-}
-
-__global__ void context_overlap_emit_kernel(
-    const std::uint64_t* flags,
+    std::uint64_t tiles_per_component,
+    std::uint64_t tile_count,
+    std::uint64_t* counts,
     const std::uint64_t* offsets,
-    std::uint64_t polygon_count,
-    std::uint64_t total_pairs,
     std::uint64_t* out_component_indices,
     std::uint64_t* out_polygon_indices) {
-    const std::uint64_t stride = static_cast<std::uint64_t>(blockDim.x) * static_cast<std::uint64_t>(gridDim.x);
-    for (std::uint64_t linear = static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-         linear < total_pairs;
-         linear += stride) {
-        if (!flags[linear]) {
-            continue;
+    using Reduce = cub::BlockReduce<unsigned, kContextThreads>;
+    using Scan = cub::BlockScan<unsigned, kContextThreads>;
+    __shared__ typename Reduce::TempStorage reduce_storage;
+    __shared__ typename Scan::TempStorage scan_storage;
+
+    for (std::uint64_t tile = blockIdx.x; tile < tile_count; tile += gridDim.x) {
+        if constexpr (Emit) {
+            if (counts[tile] == 0) continue;
         }
-        const std::uint64_t component_index = linear / polygon_count;
-        const std::uint64_t polygon_index = linear - component_index * polygon_count;
-        const std::uint64_t out_index = offsets[linear];
-        out_component_indices[out_index] = component_index;
-        out_polygon_indices[out_index] = polygon_index;
+        const auto component_index = tile / tiles_per_component;
+        const auto first_polygon = (tile % tiles_per_component) * kContextTileSize;
+        const auto end_polygon = first_polygon + min(polygon_count - first_polygon, kContextTileSize);
+        const auto* cb = component_bboxes + component_index * 4;
+        const auto layer = component_layers[component_index];
+        const auto datatype = component_datatypes[component_index];
+        unsigned count = 0;
+        std::uint64_t output = Emit ? offsets[tile] : 0;
+        for (auto base = first_polygon; base < end_polygon; base += kContextThreads) {
+            const auto polygon = base + threadIdx.x;
+            unsigned hit = 0;
+            if (polygon < end_polygon && polygon_layers[polygon] == layer && polygon_datatypes[polygon] == datatype) {
+                const auto* pb = polygon_bboxes + polygon * 4;
+                hit = pb[2] > cb[0] && cb[2] > pb[0] && max(pb[1], cb[1]) < min(pb[3], cb[3]);
+            }
+            if constexpr (Emit) {
+                unsigned rank = 0;
+                unsigned batch_count = 0;
+                Scan(scan_storage).ExclusiveSum(hit, rank, batch_count);
+                if (hit) {
+                    out_component_indices[output + rank] = component_index;
+                    out_polygon_indices[output + rank] = polygon;
+                }
+                output += batch_count;
+                __syncthreads();
+            } else {
+                count += hit;
+            }
+        }
+        if constexpr (!Emit) {
+            const auto tile_hits = Reduce(reduce_storage).Sum(count);
+            if (threadIdx.x == 0) counts[tile] = tile_hits;
+            __syncthreads();
+        }
     }
 }
 
@@ -4338,7 +4350,11 @@ int gds_cuda_context_overlap_pairs(
         if (component_count > std::numeric_limits<std::uint64_t>::max() / polygon_count) {
             throw std::overflow_error("context overlap pair search count overflow");
         }
-        const std::uint64_t total_pairs = component_count * polygon_count;
+        const std::uint64_t tiles_per_component = 1 + (polygon_count - 1) / kContextTileSize;
+        const std::uint64_t tile_count = component_count * tiles_per_component;
+        if (tile_count > std::numeric_limits<std::size_t>::max() / sizeof(std::uint64_t)) {
+            throw std::overflow_error("context overlap tile count exceeds address space");
+        }
         check_cuda(cudaEventCreate(&event_start), "create context overlap start event");
         check_cuda(cudaEventCreate(&event_stop), "create context overlap stop event");
         check_cuda(cudaEventRecord(event_start), "record context overlap start event");
@@ -4349,7 +4365,8 @@ int gds_cuda_context_overlap_pairs(
         DeviceBuffer<std::int64_t> d_polygon_bboxes(polygon_count * 4);
         DeviceBuffer<std::int32_t> d_polygon_layers(polygon_count);
         DeviceBuffer<std::int32_t> d_polygon_datatypes(polygon_count);
-        DeviceBuffer<std::uint64_t> d_flags(total_pairs);
+        // Prefix-sum tile counts instead of allocating two arrays for the Cartesian product.
+        DeviceBuffer<std::uint64_t> d_counts(tile_count);
 
         check_cuda(cudaMemcpy(d_component_bboxes.get(), component_bboxes, sizeof(std::int64_t) * component_count * 4, cudaMemcpyHostToDevice), "copy context component bboxes");
         check_cuda(cudaMemcpy(d_component_layers.get(), component_layers, sizeof(std::int32_t) * component_count, cudaMemcpyHostToDevice), "copy context component layers");
@@ -4358,44 +4375,47 @@ int gds_cuda_context_overlap_pairs(
         check_cuda(cudaMemcpy(d_polygon_layers.get(), polygon_layers, sizeof(std::int32_t) * polygon_count, cudaMemcpyHostToDevice), "copy context polygon layers");
         check_cuda(cudaMemcpy(d_polygon_datatypes.get(), polygon_datatypes, sizeof(std::int32_t) * polygon_count, cudaMemcpyHostToDevice), "copy context polygon datatypes");
 
-        const int threads = 256;
-        const int blocks = static_cast<int>(std::min<std::uint64_t>((total_pairs + threads - 1) / threads, 65535));
-        context_overlap_flag_kernel<<<blocks, threads>>>(
+        const int blocks = static_cast<int>(std::min<std::uint64_t>(tile_count, 65535));
+        context_overlap_tile_kernel<false><<<blocks, kContextThreads>>>(
             d_component_bboxes.get(),
             d_component_layers.get(),
             d_component_datatypes.get(),
-            component_count,
             d_polygon_bboxes.get(),
             d_polygon_layers.get(),
             d_polygon_datatypes.get(),
             polygon_count,
-            total_pairs,
-            d_flags.get());
-        check_cuda(cudaGetLastError(), "launch context overlap flag kernel");
+            tiles_per_component, tile_count, d_counts.get(), nullptr, nullptr, nullptr);
+        check_cuda(cudaGetLastError(), "launch context overlap count kernel");
 
-        thrust::device_ptr<std::uint64_t> flags_begin(d_flags.get());
-        thrust::device_ptr<std::uint64_t> flags_end(d_flags.get() + total_pairs);
-        thrust::device_vector<std::uint64_t> d_offsets(total_pairs);
-        thrust::exclusive_scan(thrust::device, flags_begin, flags_end, d_offsets.begin());
+        thrust::device_ptr<std::uint64_t> counts_begin(d_counts.get());
+        thrust::device_vector<std::uint64_t> d_offsets(tile_count);
+        thrust::exclusive_scan(thrust::device, counts_begin, counts_begin + tile_count, d_offsets.begin());
 
         std::uint64_t last_offset = 0;
-        std::uint64_t last_flag = 0;
-        check_cuda(cudaMemcpy(&last_offset, thrust::raw_pointer_cast(d_offsets.data()) + (total_pairs - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy context overlap last offset");
-        check_cuda(cudaMemcpy(&last_flag, d_flags.get() + (total_pairs - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy context overlap last flag");
-        if (last_flag > std::numeric_limits<std::uint64_t>::max() - last_offset) {
+        std::uint64_t last_count = 0;
+        check_cuda(cudaMemcpy(&last_offset, thrust::raw_pointer_cast(d_offsets.data()) + (tile_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy context overlap last offset");
+        check_cuda(cudaMemcpy(&last_count, d_counts.get() + (tile_count - 1), sizeof(std::uint64_t), cudaMemcpyDeviceToHost), "copy context overlap last count");
+        if (last_count > std::numeric_limits<std::uint64_t>::max() - last_offset) {
             throw std::overflow_error("context overlap pair count overflow");
         }
-        result->pair_count = last_offset + last_flag;
-        result->cuda_kernel_count = 3;
+        result->pair_count = last_offset + last_count;
+        if (result->pair_count > std::numeric_limits<std::size_t>::max() / sizeof(std::uint64_t)) {
+            throw std::overflow_error("context overlap result exceeds address space");
+        }
+        result->cuda_kernel_count = result->pair_count ? 2 : 1;
 
         if (result->pair_count) {
             DeviceBuffer<std::uint64_t> d_component_indices(result->pair_count);
             DeviceBuffer<std::uint64_t> d_polygon_indices(result->pair_count);
-            context_overlap_emit_kernel<<<blocks, threads>>>(
-                d_flags.get(),
-                thrust::raw_pointer_cast(d_offsets.data()),
+            context_overlap_tile_kernel<true><<<blocks, kContextThreads>>>(
+                d_component_bboxes.get(),
+                d_component_layers.get(),
+                d_component_datatypes.get(),
+                d_polygon_bboxes.get(),
+                d_polygon_layers.get(),
+                d_polygon_datatypes.get(),
                 polygon_count,
-                total_pairs,
+                tiles_per_component, tile_count, d_counts.get(), thrust::raw_pointer_cast(d_offsets.data()),
                 d_component_indices.get(),
                 d_polygon_indices.get());
             check_cuda(cudaGetLastError(), "launch context overlap emit kernel");

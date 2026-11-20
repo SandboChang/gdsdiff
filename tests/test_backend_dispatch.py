@@ -154,17 +154,16 @@ def test_require_gpu_uses_cuda_when_available(tmp_path):
     result = compare_gds_files(CompareConfig(old_path, new_path, backend=Backend.AUTO, require_gpu=True, tile_size=10))
 
     assert result.report.backend["name"] in {"cuda", "metal"}
+    assert result.report.backend["gpu_requirement_met"] is True
 
 
-def test_explicit_metal_backend_requires_metal_runtime(tmp_path):
-    capabilities = discover_native_capabilities()
+def test_explicit_metal_backend_reports_cpu_fallback_when_runtime_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_module, "discover_native_capabilities", _capabilities)
     old_path, new_path = _write_pair(tmp_path)
-
-    if not capabilities.metal_available:
-        with pytest.raises(ValueError, match="Metal backend runtime is not available"):
-            compare_gds_files(CompareConfig(old_path, new_path, backend=Backend.METAL, tile_size=10))
-        return
 
     result = compare_gds_files(CompareConfig(old_path, new_path, backend=Backend.METAL, tile_size=10))
 
-    assert result.report.backend["name"] == "metal"
+    assert result.exit_code == 1
+    assert result.report.backend["name"] == "cpu"
+    assert result.report.backend["requested"] == "metal"
+    assert "Metal backend runtime is not available" in result.report.backend["fallback_reason"]

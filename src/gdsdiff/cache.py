@@ -25,7 +25,7 @@ from .tiling import CpuTilePrefilterResult
 from .windows import CandidateWindow
 
 CACHE_SCHEMA_VERSION = "gdsdiff-geometry-cache-v2"
-NATIVE_POLYGON_CACHE_SCHEMA_VERSION = "gdsdiff-native-polygon-cache-v2"
+NATIVE_POLYGON_CACHE_SCHEMA_VERSION = "gdsdiff-native-polygon-cache-v4"
 PAIR_VERDICT_SCHEMA_VERSION = "gdsdiff-pair-verdict-cache-v3"
 
 
@@ -187,6 +187,7 @@ def load_or_build_cached_native_polygons(
                 top_name=manifest.get("top_name"),
                 buffer=_buffer_from_cache(manifest, arrays),
                 native_parse_s=manifest.get("native_parse_s"),
+                oracle_reuse_eligible=manifest.get("oracle_reuse_eligible") is True,
             )
         except (KeyError, TypeError, ValueError, IndexError):
             cached = None
@@ -209,6 +210,7 @@ def load_or_build_cached_native_polygons(
         "cache_key": key,
         "top_name": extraction.top_name,
         "native_parse_s": extraction.native_parse_s,
+        "oracle_reuse_eligible": extraction.oracle_reuse_eligible,
         "layers": extraction.buffer.layer_table.to_json(),
         "polygon_hashes_present": extraction.buffer.polygon_hashes is not None,
     }

@@ -29,6 +29,7 @@ class _CPolygonExtractResult(ctypes.Structure):
         ("flags", ctypes.POINTER(ctypes.c_uint32)),
         ("source_ids", ctypes.POINTER(ctypes.c_uint64)),
         ("hashes", ctypes.POINTER(ctypes.c_uint64)),
+        ("oracle_reuse_eligible", ctypes.c_uint32),
     ]
 
 
@@ -38,6 +39,7 @@ class NativePolygonExtraction:
     top_name: str | None
     buffer: PolygonBuffer
     native_parse_s: float | None = None
+    oracle_reuse_eligible: bool = False
 
 
 def extract_gds_polygons_native(
@@ -56,7 +58,9 @@ def extract_gds_polygons_native(
         raise PolygonExtractCtypesUnavailable(message.decode("utf-8") if message else "native polygon extraction failed")
     try:
         buffer = _buffer_from_result(result, layers=layers)
-        return NativePolygonExtraction(path=path, top_name=top_name, buffer=buffer)
+        return NativePolygonExtraction(
+            path=path, top_name=top_name, buffer=buffer, oracle_reuse_eligible=bool(result.oracle_reuse_eligible),
+        )
     finally:
         library.gds_polygon_extract_free(ctypes.byref(result))
 

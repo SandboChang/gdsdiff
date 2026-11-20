@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import gdstk
 import numpy as np
 import pytest
 
@@ -20,9 +21,16 @@ from gdsdiff.backends.cuda_ctypes import (
 )
 from gdsdiff.backends.metal import MetalExactUnavailable, MetalManhattanRectExactComponentBackend
 from gdsdiff.backends.metal_ctypes import metal_ctypes_available, run_metal_rect_set_exact_fragments
-from gdsdiff.exact_oracle import ExactLayerTask, _component_task_specs, _sparse_rectangle_residual_task_specs
+from gdsdiff.exact_oracle import (
+    ExactLayerTask,
+    _component_task_specs,
+    _fragments_from_gdstk,
+    _run_aligned_sparse_exact_oracle,
+    _sparse_rectangle_residual_task_specs,
+)
 from gdsdiff.extract import extract_gds_polygons
 from gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.grid import snap_to_grid
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):
@@ -59,6 +67,14 @@ def test_format_twice_area():
     assert format_twice_area(3) == "1.5"
 
 
+@pytest.mark.parametrize("delta", [0, 0.5])
+def test_gdstk_fragment_conversion_preserves_grid_rounding(delta):
+    polygon = gdstk.Polygon([(-3 - delta, 1 + delta), (8 + delta, 0), (-2, 8)])
+    origin = (500, -1500)
+    [fragment] = _fragments_from_gdstk([polygon], origin)
+    assert fragment.points == tuple((snap_to_grid(x, 1) + origin[0], snap_to_grid(y, 1) + origin[1]) for x, y in polygon.points)
+
+
 def test_identical_buffers_are_equivalent():
     old = _buffer([_rect(0, 0, 10, 10)])
     new = _buffer([_rect(0, 0, 10, 10)])
@@ -67,6 +83,27 @@ def test_identical_buffers_are_equivalent():
 
     assert result.equivalent
     assert result.layers[0].xor_twice_area == 0
+
+
+def test_aligned_sparse_exact_oracle_keeps_common_overlapping_and_hole_context():
+    common = [_rect(2, 2, 4, 4), _rect(9, 0, 14, 10), _rect(50, 50, 60, 60)]
+    old = _buffer(common + [_rect(0, 0, 10, 10)])
+    new = _buffer(common + [_rect(12, 0, 22, 10)])
+
+    sparse = _run_aligned_sparse_exact_oracle(old, new)
+    full = run_full_exact_oracle(old, new, workers=1)
+
+    assert sparse == full
+    assert full.layers[0].old_minus_new_twice_area == 172
+    assert full.layers[0].new_minus_old_twice_area == 160
+
+
+def test_aligned_sparse_exact_oracle_declines_misaligned_record_lengths():
+    old = _buffer([_rect(0, 0, 10, 10), [(21, 1), (25, 1), (23, 4)]])
+    new = _buffer([[(21, 1), (25, 1), (23, 4)], _rect(0, 0, 10, 10)])
+
+    assert _run_aligned_sparse_exact_oracle(old, new) is None
+    assert run_full_exact_oracle(old, new, workers=1).equivalent
 
 
 def test_shifted_rectangle_has_directional_differences():

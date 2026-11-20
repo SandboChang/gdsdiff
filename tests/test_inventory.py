@@ -75,6 +75,51 @@ def test_inventory_counts_reachable_references_labels_and_paths(tmp_path):
     assert inventory.ignored_record_counts["labels"] == 1
 
 
+def test_inventory_matches_flattened_layers_for_nested_arrays(tmp_path):
+    path = tmp_path / "arrays.gds"
+    lib = gdstk.Library()
+    leaf = lib.new_cell("leaf")
+    leaf.add(gdstk.rectangle((0, 0), (1, 1), layer=7, datatype=3))
+    leaf.add(gdstk.FlexPath([(0, 1), (1, 1)], 0.5, simple_path=True, layer=2, datatype=5))
+    leaf.add(gdstk.Label("not geometry", (0, 0), layer=99, texttype=4))
+    block = lib.new_cell("block")
+    block.add(gdstk.Reference(leaf, columns=3, rows=4, spacing=(2, 2)))
+    top = lib.new_cell("top")
+    top.add(gdstk.Reference(block, (20, 25), magnification=2, x_reflection=True))
+    top.add(gdstk.Reference(block, columns=2, rows=3, spacing=(30, 30)))
+    lib.new_cell("unrelated").add(gdstk.rectangle((0, 0), (1, 1), layer=100))
+    lib.write_gds(path)
+
+    loaded_top = next(cell for cell in gdstk.read_gds(path).cells if cell.name == "top")
+    flattened = {LayerSpec(p.layer, p.datatype) for p in loaded_top.get_polygons()}
+    inventory = inventory_gds(path, top_name="top")
+
+    assert inventory.layers == tuple(sorted(flattened)) == (LayerSpec(2, 5), LayerSpec(7, 3))
+    assert inventory.reachable_cells == ("block", "leaf", "top")
+    assert inventory.records.to_json() == {"polygons": 1, "paths": 1, "labels": 1, "references": 3, "cells": 3}
+    assert inventory.metadata.cell_count == 4
+
+
+def test_inventory_handles_deep_hierarchy(tmp_path):
+    path = tmp_path / "deep.gds"
+    lib = gdstk.Library()
+    leaf = lib.new_cell("c0")
+    leaf.add(gdstk.rectangle((0, 0), (1, 1), layer=4))
+    child = leaf
+    for i in range(1, 1200):
+        parent = lib.new_cell(f"c{i}")
+        parent.add(gdstk.Reference(child))
+        child = parent
+    lib.write_gds(path)
+
+    inventory = inventory_gds(path)
+
+    assert inventory.selected_top == "c1199"
+    assert inventory.layers == (LayerSpec(4, 0),)
+    assert inventory.records.cells == 1200
+    assert inventory.records.references == 1199
+
+
 def test_resolve_selected_layers_all_and_presence(tmp_path):
     old_path = tmp_path / "old.gds"
     new_path = tmp_path / "new.gds"

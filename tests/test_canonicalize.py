@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from gdsdiff import canonicalize_polygon, intern_polygons
+from gdsdiff.canonicalize import _canonical_valid_points
 from gdsdiff.geometry import LayerTable, PolygonBuffer
 from gdsdiff.config import LayerSpec
 
@@ -33,6 +34,16 @@ def test_valid_polygon_cyclic_shift_and_reverse_have_same_blob():
 
     assert canonicalize_polygon(square)[0] == canonicalize_polygon(shifted)[0]
     assert canonicalize_polygon(square)[0] == canonicalize_polygon(reversed_square)[0]
+
+
+def test_canonical_points_choose_the_same_rotation_with_repeated_minima():
+    points = ((0, 0), (4, 0), (4, 4), (0, 4), (0, 0), (1, 1), (1, 2), (2, 1), (1, 1))
+    expected = min(
+        loop[index:] + loop[:index]
+        for loop in (points, points[::-1])
+        for index in range(len(loop))
+    )
+    assert _canonical_valid_points(points) == expected
 
 
 def test_invalid_polygon_preserves_raw_order_conservatively():

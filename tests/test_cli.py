@@ -8,6 +8,7 @@ from importlib.metadata import version
 import gdstk
 import pytest
 
+from gdsdiff import inventory_gds
 from gdsdiff.native import discover_native_capabilities
 
 
@@ -31,6 +32,58 @@ def _write_pair(tmp_path):
     old.write_gds(old_path)
     new.write_gds(new_path)
     return old_path, new_path
+
+
+def test_cli_inspect_prints_single_layout_summary(tmp_path):
+    path, _ = _write_pair(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-m", "gdsdiff", "inspect", str(path)], check=False, text=True, capture_output=True
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Selected cell: top" in completed.stdout
+    assert "Cells: 1 reachable / 1 in file" in completed.stdout
+    assert "Geometry layers (layer:datatype): 1:0" in completed.stdout
+    assert "Stored records: 1 polygons, 0 paths, 0 labels, 0 references" in completed.stdout
+
+
+def test_cli_inspect_json_selects_a_cell_in_a_multi_top_file(tmp_path):
+    path = tmp_path / "multiple.gds"
+    lib = gdstk.Library()
+    lib.new_cell("A").add(gdstk.rectangle((0, 0), (1, 1), layer=1))
+    lib.new_cell("B").add(gdstk.rectangle((0, 0), (1, 1), layer=2, datatype=3))
+    lib.write_gds(path)
+    command = [sys.executable, "-m", "gdsdiff", "inspect", str(path), "--json"]
+
+    ambiguous = subprocess.run(command, check=False, text=True, capture_output=True)
+    assert ambiguous.returncode == 2
+    assert ambiguous.stdout == ""
+    assert "found 2: A, B" in ambiguous.stderr
+
+    selected = subprocess.run(command + ["--top", "B"], check=False, text=True, capture_output=True)
+    assert selected.returncode == 0, selected.stderr
+    data = json.loads(selected.stdout)
+    assert data == inventory_gds(path, top_name="B").to_json()
+    assert data["selected_top"] == "B"
+    assert data["layers"] == [{"layer": 2, "datatype": 3}]
+
+
+@pytest.mark.parametrize("malformed", [False, True], ids=["missing", "malformed"])
+def test_cli_inspect_rejects_bad_inputs(tmp_path, malformed):
+    path = tmp_path / "bad.gds"
+    if malformed:
+        path.write_bytes(b"not GDSII")
+    completed = subprocess.run(
+        [sys.executable, "-m", "gdsdiff", "inspect", str(path), "--json"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert "gdsdiff inspect:" in completed.stderr
+    assert "Traceback" not in completed.stderr
 
 
 def test_cli_template_subcommands_produce_expected_artifacts(tmp_path):

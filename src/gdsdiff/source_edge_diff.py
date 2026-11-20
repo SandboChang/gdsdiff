@@ -249,7 +249,7 @@ def _cached_component_side_diff(
     direction: str,
     cache: dict[tuple[str, tuple[object, ...]], tuple[tuple[DiffFragment, ...], _ComponentSideStats]],
 ) -> tuple[tuple[DiffFragment, ...], _ComponentSideStats]:
-    origin = (component.bbox[0], component.bbox[1])
+    origin = component.bbox[:2]
     key = (direction, _normalized_component_key(component, origin))
     cached = cache.get(key)
     if cached is None:
@@ -283,6 +283,7 @@ def _merge_contacting_source_components(components: tuple[PolygonComponent, ...]
 
 
 def _component_bbox_contact_groups(components: tuple[PolygonComponent, ...]) -> tuple[tuple[int, ...], ...]:
+    bboxes = tuple(component.bbox for component in components)
     remaining = set(range(len(components)))
     groups: list[tuple[int, ...]] = []
     while remaining:
@@ -291,7 +292,7 @@ def _component_bbox_contact_groups(components: tuple[PolygonComponent, ...]) -> 
         stack = [seed]
         while stack:
             left = stack.pop()
-            touched = [right for right in remaining if _bbox_contact(components[left].bbox, components[right].bbox)]
+            touched = [right for right in remaining if _bbox_contact(bboxes[left], bboxes[right])]
             for right in touched:
                 remaining.remove(right)
                 group.add(right)

@@ -4,7 +4,7 @@ import hashlib
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
 from typing import Callable
@@ -17,7 +17,7 @@ from .cache import (
     write_cached_pair_verdict,
 )
 from ._environment import get_environment
-from .canonicalize import intern_polygons
+from .canonicalize import _canonical_valid_points, intern_polygons
 from .config import CompareConfig, LayerSpec
 from .backends.exact import CudaManhattanRectExactComponentBackend, GdstkExactComponentBackend, ManhattanRectExactComponentBackend
 from .backends.metal import MetalManhattanRectExactComponentBackend
@@ -30,9 +30,17 @@ from .exact_diff_markdown import (
     build_polygon_inventory_delta_from_record_delta,
     write_exact_diff_markdown,
 )
-from .exact_oracle import DiffFragment, ExactLayerTask, ExactOracleResult, LayerExactDiff, run_full_exact_oracle
+from .exact_oracle import (
+    DiffFragment,
+    ExactLayerTask,
+    ExactOracleResult,
+    LayerExactDiff,
+    _run_aligned_sparse_exact_oracle,
+    run_full_exact_oracle,
+)
 from .extract import ExtractionResult, extract_gds_polygons
-from .gds_metadata import read_gds_metadata
+from .gds_metadata import decimal_from_number, read_gds_metadata
+from .grid import resolve_comparison_grid
 from .geometry import PolygonBuffer
 from .hierarchy import compare_hierarchy
 from .multiprocessing_support import mark_portable_process_worker, portable_process_context
@@ -48,7 +56,7 @@ from .rect_coverage import RectCoverageUnsupported, run_cuda_rectangle_coverage_
 from .semantics import Backend, CompareStatus, EvidenceEngine, exit_code_for_status
 from .spatial import SpatialIndex
 from .source_edge_diff import exact_result_from_source_edges
-from .surplus_coverage import run_canonical_surplus_coverage_probe, run_record_delta_surplus_coverage_probe
+from .surplus_coverage import run_record_delta_surplus_coverage_probe
 from .tiling import CpuTilePrefilterResult, TileConfig, run_cpu_tile_prefilter
 from .windowed_exact import WindowedExactResult, run_windowed_exact_oracle
 from .windows import CandidateWindow, WindowConfig, build_candidate_windows
@@ -82,6 +90,10 @@ class _FullExactVerification:
     exact_s: float
     exact_component_backend: dict[str, object] = field(default_factory=dict)
     polygon_inventory_delta: object | None = None
+
+
+class _GpuComparisonUnavailable(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -153,25 +165,44 @@ def compare_gds_files(
     command: tuple[str, ...] = (),
 ) -> CompareRunResult:
     start = perf_counter()
-    backend_info = _select_backend(config, exact=exact)
     exact = exact or config.evidence_engine == EvidenceEngine.GDSTK_ORACLE
+    if config.require_gpu and exact:
+        raise ValueError("require_gpu cannot be combined with exact CPU-only comparison")
+    backend_info = _select_backend(config, exact=exact)
 
     old_top_name = config.old_top or config.top
     new_top_name = config.new_top or config.top
+    output_paths = {
+        "json_report_path": json_report_path,
+        "diff_gds_path": diff_gds_path,
+        "markdown_path": markdown_path,
+        "exact_diff_markdown_path": exact_diff_markdown_path,
+    }
 
-    if config.evidence_engine == EvidenceEngine.GPU_POLYGON and not exact:
+    if not exact and backend_info.get("name") == Backend.CPU.value and (
+        config.require_gpu or config.backend in {Backend.CUDA, Backend.METAL}
+    ):
+        return _gpu_failure_cpu_fallback(
+            config,
+            backend_info,
+            failures=[{"stage": "gpu-runtime", "reason": str(backend_info["fallback_reason"])}],
+            timings={},
+            command=command,
+            start=start,
+            **output_paths,
+        )
+
+    if not exact and (config.require_gpu or config.evidence_engine == EvidenceEngine.GPU_POLYGON):
         return _try_gpu_polygon_evidence_path(
             config,
             backend_info=backend_info,
             old_top_name=old_top_name,
             new_top_name=new_top_name,
             command=command,
-            json_report_path=json_report_path,
-            markdown_path=markdown_path,
-            exact_diff_markdown_path=exact_diff_markdown_path,
-            audit_cpu_oracle=audit_cpu_oracle,
+            audit_cpu_oracle=audit_cpu_oracle or (config.require_gpu and verify_exact_after_fast),
             exact_component_backend=exact_component_backend,
             start=start,
+            **output_paths,
         )
 
     if use_structural_guard and not exact:
@@ -323,14 +354,26 @@ def compare_gds_files(
         timings["canonical_s"] = perf_counter() - canonical_start
         tile_config = TileConfig(tile_size=config.tile_size)
         prefilter_start = perf_counter()
-        prefilter = _run_tile_prefilter(
-            backend_info,
-            old_extraction.buffer,
-            old_canonical_ids,
-            new_extraction.buffer,
-            new_canonical_ids,
-            tile_config,
-        )
+        try:
+            prefilter = _run_tile_prefilter(
+                backend_info,
+                old_extraction.buffer,
+                old_canonical_ids,
+                new_extraction.buffer,
+                new_canonical_ids,
+                tile_config,
+            )
+        except _GpuComparisonUnavailable as exc:
+            return _gpu_failure_cpu_fallback(
+                config,
+                backend_info,
+                failures=[{"stage": "gpu-tile-prefilter", "reason": str(exc)}],
+                timings=timings,
+                warnings=_release_polygon_gpu(backend_info.get("name"), timings),
+                command=command,
+                start=start,
+                **output_paths,
+            )
         timings["prefilter_s"] = perf_counter() - prefilter_start
         spatial_start = perf_counter()
         old_index = cached_geometry[0].spatial_index if cached_geometry[0] is not None else SpatialIndex.from_buffer(old_extraction.buffer)
@@ -964,6 +1007,154 @@ def _try_native_geometry_guard_path(
     )
 
 
+def _gpu_failure_cpu_fallback(
+    config: CompareConfig,
+    backend_info: dict[str, object],
+    *,
+    failures: list[dict[str, str]],
+    timings: dict[str, float],
+    command: tuple[str, ...],
+    start: float,
+    json_report_path: str | Path | None,
+    diff_gds_path: str | Path | None,
+    markdown_path: str | Path | None,
+    exact_diff_markdown_path: str | Path | None,
+    warnings: tuple[str, ...] = (),
+    native_inputs: tuple[dict[str, object], dict[str, object]] | None = None,
+    record_delta=None,
+) -> CompareRunResult:
+    fallback_start = perf_counter()
+    verification = None
+    failures = list(failures)
+    gpu_failure = f"{failures[0]['stage']}: {failures[0]['reason']}"
+    try:
+        verification = _run_full_exact_verification(config, force_small_component_partition=True, allow_sparse_audit=True)
+    except (ValueError, RuntimeError, OSError, OverflowError, MemoryError) as exc:
+        failures.append({"stage": "cpu-fallback", "reason": str(exc) or type(exc).__name__})
+    timings["cpu_fallback_s"] = perf_counter() - fallback_start
+    complete = verification is not None
+    gpu_work_performed = _gpu_primary_work_performed(None, record_delta)
+    mode = "gpu-record-delta-plus-cpu-oracle-fallback" if gpu_work_performed else "cpu-gdstk-oracle-after-gpu-failure"
+    if complete:
+        exact_result = verification.exact_result
+        policy_result = verification.policy_result
+        inventory_delta = verification.polygon_inventory_delta
+        old_input = verification.old_input
+        new_input = verification.new_input
+        selection = verification.selection
+        layers = verification.layers
+        timings.update(extract_s=verification.extract_s, exact_s=verification.exact_s)
+    else:
+        exact_result = ExactOracleResult(())
+        policy_result = classify_exact_differences(exact_result, config.allowed_regions, failure_policy=config.failure_policy)
+        inventory_delta = None
+        old_top = config.old_top or config.top
+        new_top = config.new_top or config.top
+        old_input = {"path": str(config.old_path), "selected_top": old_top}
+        new_input = {"path": str(config.new_path), "selected_top": new_top}
+        selection = {"old_top": old_top, "new_top": new_top, "layers": config.to_json_dict()["layers"]}
+        layers = ()
+    if native_inputs is not None:
+        old_input = old_input | native_inputs[0]
+        new_input = new_input | native_inputs[1]
+    else:
+        old_input = old_input | {"native_polygon_parse_complete": False}
+        new_input = new_input | {"native_polygon_parse_complete": False}
+
+    cpu_status = _neutral_compare_status(policy_result, polygon_inventory_delta=inventory_delta, exact_complete=complete)
+    status = CompareStatus.INCOMPLETE_EVIDENCE if config.require_gpu and not gpu_work_performed else cpu_status
+    if gpu_work_performed:
+        note = "GPU source-record comparison completed, but GPU coverage evidence did not complete. "
+    elif config.require_gpu:
+        note = "GPU requirement was not met. "
+    else:
+        note = "GPU comparison did not complete. "
+    note += "Exact coverage evidence is from the CPU oracle." if complete and gpu_work_performed else (
+        "Exact evidence below is CPU-only." if complete else "CPU fallback did not complete either."
+    )
+    warnings = (note,) + tuple(f"{failure['stage']}: {failure['reason']}" for failure in failures) + warnings
+    artifacts: dict[str, str] = {}
+    if exact_diff_markdown_path is not None:
+        if complete:
+            written = write_exact_diff_markdown(
+                policy_result,
+                exact_diff_markdown_path,
+                title=f"GDS comparison: {note}",
+                source_mode=mode,
+                polygon_inventory_delta=inventory_delta,
+            )
+            _record_exact_markdown_artifacts(artifacts, written)
+        else:
+            _write_gpu_polygon_unavailable_markdown(exact_diff_markdown_path, " ".join(warnings))
+            artifacts["exact_diff_markdown"] = str(exact_diff_markdown_path)
+    if complete and diff_gds_path is not None:
+        artifacts["diff_gds"] = str(write_diff_gds(policy_result, diff_gds_path).path)
+    if markdown_path is not None:
+        markdown_path = Path(markdown_path)
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text("### GDS comparison evidence\n\n" + "\n".join(f"- {line}" for line in warnings) + "\n", encoding="utf-8")
+        artifacts["markdown"] = str(markdown_path)
+
+    prefilter = CpuTilePrefilterResult(candidate_tiles=())
+    policy_summary = policy_result.to_json()
+    timings["total_s"] = perf_counter() - start
+    report = CompareReport(
+        status=status,
+        exact_verification_complete=complete,
+        old_input=old_input,
+        new_input=new_input,
+        semantics=config.to_json_dict(),
+        selection=selection,
+        backend=backend_info | {
+            "name": backend_info["name"] if gpu_work_performed else "cpu",
+            "fallback_reason": gpu_failure,
+            "evidence_engine_requested": config.evidence_engine.value,
+            "evidence_engine_selected": "gdstk-oracle",
+            "gpu_polygon_available": False,
+            "gpu_record_delta_available": gpu_work_performed,
+            "gpu_work_performed": gpu_work_performed,
+            "gpu_requirement_met": gpu_work_performed if config.require_gpu else None,
+            "cuda_kernel_count": getattr(record_delta, "cuda_kernel_count", 0),
+            "metal_kernel_count": getattr(record_delta, "metal_kernel_count", 0),
+            "cuda_event_elapsed_s": getattr(record_delta, "cuda_event_elapsed_s", 0.0),
+            "metal_event_elapsed_s": getattr(record_delta, "metal_event_elapsed_s", 0.0),
+        },
+        prefilter=prefilter.to_json(),
+        exact_fallback={
+            "mode": mode,
+            "engine": "gdstk-oracle",
+            "engine_status": "complete" if complete else "failed",
+            "cpu_evidence_status": cpu_status.value,
+            "audit_cpu_oracle": False,
+            "window_count": 0,
+            "escalated_layers": [],
+            "failures": failures,
+        },
+        layers=layers,
+        allowed_policy=policy_result.effective_policy,
+        unexpected_summary={key: policy_summary[key] for key in ("expected_area_dbu2", "unexpected_area_dbu2")},
+        timings=timings,
+        warnings=warnings,
+        errors=warnings if status == CompareStatus.INCOMPLETE_EVIDENCE else (),
+        artifacts=artifacts,
+        **_neutral_evidence_report_fields(
+            status,
+            policy_result,
+            polygon_inventory_delta=inventory_delta,
+            exact_complete=complete,
+            unsupported_feature_count=0,
+            vertex_sidecar_path=artifacts.get("vertex_sidecar"),
+        ),
+        command=command,
+        failure_policy=config.failure_policy,
+    )
+    if json_report_path is not None:
+        artifacts["json_report"] = str(json_report_path)
+        report = _report_with_artifacts(report, artifacts)
+        report.write_json(json_report_path)
+    return CompareRunResult(status, report, exact_result, policy_result, prefilter, (), artifacts, timings)
+
+
 def _try_gpu_polygon_evidence_path(
     config: CompareConfig,
     *,
@@ -972,6 +1163,7 @@ def _try_gpu_polygon_evidence_path(
     new_top_name: str | None,
     command: tuple[str, ...],
     json_report_path: str | Path | None,
+    diff_gds_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
     audit_cpu_oracle: bool,
@@ -990,11 +1182,28 @@ def _try_gpu_polygon_evidence_path(
     polygon_inventory_delta = None
     source_edge_cpu_fallback = None
     source_edge_cpu_verification = None
-    native_parse_cpu_verification = None
-
+    native_correction_audit_failed = False
     cpu_neutral_fallback = backend_info.get("name") == Backend.CPU.value
-    gpu_runtime_available = bool(backend_info.get("cuda_ctypes_available") or backend_info.get("metal_ctypes_available"))
-    if cpu_neutral_fallback or (audit_cpu_oracle and not gpu_runtime_available):
+    gpu_name = backend_info.get("name")
+    output_paths = {
+        "json_report_path": json_report_path,
+        "diff_gds_path": diff_gds_path,
+        "markdown_path": markdown_path,
+        "exact_diff_markdown_path": exact_diff_markdown_path,
+    }
+    if not cpu_neutral_fallback and not backend_info.get(f"{gpu_name}_ctypes_available"):
+        return _gpu_failure_cpu_fallback(
+            config,
+            backend_info,
+            failures=[{"stage": "gpu-runtime", "reason": f"{gpu_name} polygon runtime is not available"}],
+            timings={},
+            command=command,
+            start=start,
+            **output_paths,
+        )
+
+    gpu_work_performed = False
+    if cpu_neutral_fallback:
         audit_start = perf_counter()
         audit_backend = _default_cpu_audit_component_backend(exact_component_backend)
         verification = _run_full_exact_verification(
@@ -1017,31 +1226,15 @@ def _try_gpu_polygon_evidence_path(
         exact_result = verification.exact_result
         polygon_inventory_delta = verification.polygon_inventory_delta
         exact_complete = True
-        warnings = (
-            (
-                "No suitable GPU backend was selected; CPU gdstk oracle produced complete neutral exact evidence."
-                if cpu_neutral_fallback
-                else "Requested gpu-polygon evidence engine is not implemented yet; CPU gdstk oracle audit was run explicitly via --audit-cpu-oracle."
-            ),
-        )
+        warnings = ("No suitable GPU backend was selected; CPU gdstk oracle produced complete neutral exact evidence.",)
         exact_fallback = {
-            "mode": (
-                "cpu-gdstk-oracle-neutral-fallback"
-                if cpu_neutral_fallback
-                else "gpu-polygon-unavailable-plus-cpu-oracle-audit"
-            ),
-            "engine": "gdstk-oracle" if cpu_neutral_fallback else "gpu-polygon",
-            "engine_status": "complete" if cpu_neutral_fallback else "not-implemented",
-            "audit_cpu_oracle": not cpu_neutral_fallback,
+            "mode": "cpu-gdstk-oracle-neutral-fallback",
+            "engine": "gdstk-oracle",
+            "engine_status": "complete",
+            "audit_cpu_oracle": False,
             "window_count": 0,
             "escalated_layers": [],
-            "failures": []
-            if cpu_neutral_fallback
-            else [
-                {
-                    "reason": "gpu-polygon exact numeric diff record engine is not implemented yet",
-                }
-            ],
+            "failures": [],
             "exact_component_backend": verification.exact_component_backend,
         }
         old_input = verification.old_input
@@ -1053,11 +1246,7 @@ def _try_gpu_polygon_evidence_path(
             markdown_written = write_exact_diff_markdown(
                 policy_result,
                 exact_diff_markdown_path,
-                title=(
-                    "GDS comparator CPU fallback exact diff"
-                    if cpu_neutral_fallback
-                    else "GDS comparator CPU-audited gpu-polygon exact diff"
-                ),
+                title="GDS comparator CPU fallback exact diff",
                 source_mode=exact_fallback["mode"],
                 exact_verification_complete=True,
                 polygon_inventory_delta=polygon_inventory_delta,
@@ -1069,16 +1258,20 @@ def _try_gpu_polygon_evidence_path(
         parse_failures: list[dict[str, str]] = []
         record_delta_failures: list[dict[str, str]] = []
         coverage_failures: list[dict[str, str]] = []
-        component_area_failures: list[dict[str, str]] = []
         old_native = None
         new_native = None
         native_cache_timings: dict[str, object] = {}
         try:
+            _validate_native_comparison_grid(config)
             old_native, new_native, native_cache_timings = _gpu_polygon_native_inputs(
                 config,
                 old_top_name=old_top_name,
                 new_top_name=new_top_name,
             )
+        except _GpuComparisonUnavailable as exc:
+            parse_failures.append({"stage": "native-grid", "reason": str(exc)})
+        except (MemoryError, OSError) as exc:
+            parse_failures.append({"stage": "native-parse", "reason": str(exc) or type(exc).__name__})
         except PolygonExtractCtypesUnavailable as exc:
             common_top = _resolve_single_common_top_after_native_parse_failure(config, str(exc), old_top_name, new_top_name)
             if common_top is None:
@@ -1092,9 +1285,19 @@ def _try_gpu_polygon_evidence_path(
                         old_top_name=old_top_name,
                         new_top_name=new_top_name,
                     )
-                except PolygonExtractCtypesUnavailable as retry_exc:
-                    parse_failures.append({"stage": "native-parse", "reason": str(retry_exc)})
+                except (PolygonExtractCtypesUnavailable, MemoryError, OSError) as retry_exc:
+                    parse_failures.append({"stage": "native-parse", "reason": str(retry_exc) or type(retry_exc).__name__})
         native_parse_s = perf_counter() - parse_start
+        if parse_failures:
+            return _gpu_failure_cpu_fallback(
+                config,
+                backend_info,
+                failures=parse_failures,
+                timings={"native_parse_s": native_parse_s},
+                command=command,
+                start=start,
+                **output_paths,
+            )
         exact_result = ExactOracleResult(())
         policy_result = classify_exact_differences(exact_result, config.allowed_regions, failure_policy=config.failure_policy)
         exact_complete = False
@@ -1121,28 +1324,9 @@ def _try_gpu_polygon_evidence_path(
             "polygon_inventory_delta_s": 0.0,
         }
         timings.update(native_cache_timings)
-        gpu_name = backend_info.get("name")
-        gpu_rect_available = (
-            (gpu_name == Backend.CUDA.value and backend_info.get("cuda_ctypes_available"))
-            or (gpu_name == Backend.METAL.value and backend_info.get("metal_ctypes_available"))
-        )
-        if parse_failures and audit_cpu_oracle:
-            audit_start = perf_counter()
-            audit_backend = _default_cpu_audit_component_backend(exact_component_backend)
-            native_parse_cpu_verification = _run_full_exact_verification(
-                config,
-                exact_component_backend=audit_backend,
-                force_small_component_partition=True,
-            )
-            timings["cpu_oracle_audit_s"] = perf_counter() - audit_start
-            timings["extract_s"] = native_parse_cpu_verification.extract_s
-            timings["exact_s"] = native_parse_cpu_verification.exact_s
-            exact_result = native_parse_cpu_verification.exact_result
-            policy_result = native_parse_cpu_verification.policy_result
-            layers = native_parse_cpu_verification.layers
-            polygon_inventory_delta = native_parse_cpu_verification.polygon_inventory_delta
-            exact_complete = True
-        if not parse_failures and old_native is not None and new_native is not None and gpu_rect_available:
+        gpu_cleaned = False
+        cleanup_warnings: tuple[str, ...] = ()
+        if old_native is not None and new_native is not None:
             if _native_buffers_rectangle_coverage_eligible(old_native.buffer, new_native.buffer):
                 try:
                     coverage_result = (
@@ -1153,15 +1337,11 @@ def _try_gpu_polygon_evidence_path(
                     timings["h2d_upload_s"] = coverage_result.stats.h2d_upload_s
                     timings["gpu_xor_s"] = coverage_result.stats.gpu_xor_s
                     timings["gpu_record_emit_s"] = coverage_result.stats.gpu_record_emit_s
-                except RectCoverageUnsupported as exc:
-                    coverage_failures.append({"stage": "gpu-coverage-xor", "reason": str(exc)})
-            else:
-                coverage_failures.append(
-                    {
-                        "stage": "gpu-coverage-xor",
-                        "reason": "skipped rectangle coverage because native polygon vertex counts include non-rectangles",
-                    }
-                )
+                except (RectCoverageUnsupported, MemoryError, OSError) as exc:
+                    coverage_failures.append({"stage": "gpu-coverage-xor", "reason": str(exc) or type(exc).__name__})
+            if config.require_gpu and coverage_result is not None and not _gpu_primary_work_performed(coverage_result, None):
+                # Equal rectangle records can exit before any kernel is launched.
+                coverage_result = None
             if coverage_result is None and gpu_name in {Backend.CUDA.value, Backend.METAL.value}:
                 try:
                     from .backends.cuda_ctypes import CudaCtypesUnavailable, run_cuda_polygon_record_delta
@@ -1173,29 +1353,64 @@ def _try_gpu_polygon_evidence_path(
                     else:
                         record_delta = run_cuda_polygon_record_delta(old_native.buffer, new_native.buffer)
                     timings["gpu_source_record_delta_s"] = perf_counter() - record_start
-                except (CudaCtypesUnavailable, MetalCtypesUnavailable) as record_exc:
-                    record_delta_failures.append({"stage": "gpu-record-delta", "reason": str(record_exc)})
-                if record_delta is not None:
-                    surplus_start = perf_counter()
-                    surplus_result = run_record_delta_surplus_coverage_probe(old_native.buffer, new_native.buffer, record_delta)
-                    surplus_probe_source = f"{_record_delta_accelerator(record_delta)}-record-delta"
-                    timings["record_delta_surplus_coverage_s"] = perf_counter() - surplus_start
-                    component_area_start = perf_counter()
-                    component_build_start = perf_counter()
-                    component_build = build_record_delta_surplus_components(old_native.buffer, new_native.buffer, record_delta)
-                    timings["polygon_component_build_s"] = perf_counter() - component_build_start
-                    context_build_start = perf_counter()
-                    context_build = add_overlapping_context_to_components(
-                        old_native.buffer,
-                        new_native.buffer,
-                        component_build.components,
-                        preferred_accelerator=_record_delta_accelerator(record_delta),
+                except (CudaCtypesUnavailable, MetalCtypesUnavailable, MemoryError, OSError) as record_exc:
+                    record_delta_failures.append({"stage": "gpu-record-delta", "reason": str(record_exc) or type(record_exc).__name__})
+                if record_delta is None or not _gpu_primary_work_performed(None, record_delta):
+                    failures = coverage_failures + record_delta_failures
+                    if record_delta is not None or not failures:
+                        failures.append({"stage": "gpu-record-delta", "reason": "no GPU comparison tasks were executed"})
+                    old_input = _native_polygon_input_json(config.old_path, old_top_name, old_native)
+                    new_input = _native_polygon_input_json(config.new_path, new_top_name, new_native)
+                    del old_native, new_native
+                    return _gpu_failure_cpu_fallback(
+                        config,
+                        backend_info,
+                        failures=failures,
+                        timings=timings,
+                        warnings=_release_polygon_gpu(gpu_name, timings),
+                        native_inputs=(old_input, new_input),
+                        command=command,
+                        start=start,
+                        **output_paths,
                     )
-                    timings["polygon_context_build_s"] = perf_counter() - context_build_start
-                    if context_build.stats.context_index_backend.startswith(("cuda", "metal")):
-                        timings["gpu_context_index_s"] = context_build.stats.context_index_s
-                    assembly_start = perf_counter()
-                    source_edge_result = exact_result_from_source_edges(context_build.components)
+                if record_delta is not None:
+                    try:
+                        surplus_start = perf_counter()
+                        surplus_result = run_record_delta_surplus_coverage_probe(old_native.buffer, new_native.buffer, record_delta)
+                        surplus_probe_source = f"{_record_delta_accelerator(record_delta)}-record-delta"
+                        timings["record_delta_surplus_coverage_s"] = perf_counter() - surplus_start
+                        component_area_start = perf_counter()
+                        component_build_start = perf_counter()
+                        component_build = build_record_delta_surplus_components(old_native.buffer, new_native.buffer, record_delta)
+                        timings["polygon_component_build_s"] = perf_counter() - component_build_start
+                        context_build_start = perf_counter()
+                        context_build = add_overlapping_context_to_components(
+                            old_native.buffer,
+                            new_native.buffer,
+                            component_build.components,
+                            preferred_accelerator=_record_delta_accelerator(record_delta),
+                        )
+                        timings["polygon_context_build_s"] = perf_counter() - context_build_start
+                        if context_build.stats.context_index_backend.startswith(("cuda", "metal")):
+                            timings["gpu_context_index_s"] = context_build.stats.context_index_s
+                        assembly_start = perf_counter()
+                        source_edge_result = exact_result_from_source_edges(context_build.components)
+                    except (ValueError, RuntimeError, OSError, OverflowError, MemoryError) as exc:
+                        old_input = _native_polygon_input_json(config.old_path, old_top_name, old_native)
+                        new_input = _native_polygon_input_json(config.new_path, new_top_name, new_native)
+                        del old_native, new_native
+                        return _gpu_failure_cpu_fallback(
+                            config,
+                            backend_info,
+                            failures=coverage_failures + [{"stage": "gpu-source-edge", "reason": str(exc) or type(exc).__name__}],
+                            timings=timings,
+                            warnings=_release_polygon_gpu(gpu_name, timings),
+                            native_inputs=(old_input, new_input),
+                            record_delta=record_delta,
+                            command=command,
+                            start=start,
+                            **output_paths,
+                        )
                     polygon_fragment_exact_result = source_edge_result.exact_result
                     timings["boundary_loop_assembly_s"] = perf_counter() - assembly_start
                     timings["gpu_edge_cancel_split_s"] = source_edge_result.stats.layer_merge_cuda_edge_cancel_s
@@ -1207,11 +1422,33 @@ def _try_gpu_polygon_evidence_path(
                         layer.new_minus_old_twice_area for layer in polygon_fragment_exact_result.layers
                     )
                     if source_edge_result.stats.nested_direction_fragment_component_count:
+                        cleanup_warnings = _release_polygon_gpu(gpu_name, timings)
+                        gpu_cleaned = True
                         fallback_start = perf_counter()
-                        source_edge_cpu_verification = _run_full_exact_verification(
-                            config,
-                            exact_component_backend="gdstk",
-                        )
+                        native_correction = None
+                        if old_native.oracle_reuse_eligible and new_native.oracle_reuse_eligible:
+                            native_start = perf_counter()
+                            native_correction = _run_aligned_sparse_exact_oracle(old_native.buffer, new_native.buffer)
+                            timings["source_edge_native_buffer_correction_s"] = perf_counter() - native_start
+
+                        if native_correction is None or audit_cpu_oracle:
+                            source_edge_cpu_verification = _run_full_exact_verification(
+                                config,
+                                exact_component_backend="gdstk",
+                                include_inventory=False,
+                                allow_sparse_audit=True,
+                            )
+                            corrected = source_edge_cpu_verification.exact_result
+                            correction_backend = source_edge_cpu_verification.exact_component_backend
+                            correction_input = "independent-gdstk-extraction"
+                            timings["source_edge_cpu_oracle_extract_s"] = source_edge_cpu_verification.extract_s
+                            timings["source_edge_cpu_oracle_exact_s"] = source_edge_cpu_verification.exact_s
+                        else:
+                            corrected = native_correction
+                            correction_backend = _select_exact_component_backend("gdstk").to_json() | {
+                                "coverage_scope": "full-layout-aligned-record-reduction",
+                            }
+                            correction_input = "native-polygon-buffers"
                         timings["source_edge_cpu_oracle_fallback_s"] = perf_counter() - fallback_start
                         source_edge_cpu_fallback = {
                             "trigger": "nested-direction-fragments",
@@ -1224,11 +1461,16 @@ def _try_gpu_polygon_evidence_path(
                             ),
                             "original_vs_cpu_oracle": _exact_result_audit_summary(
                                 polygon_fragment_exact_result,
-                                source_edge_cpu_verification.exact_result,
+                                corrected,
                             ),
-                            "exact_component_backend": source_edge_cpu_verification.exact_component_backend,
+                            "input": correction_input,
+                            "exact_component_backend": correction_backend,
                         }
-                        polygon_fragment_exact_result = source_edge_cpu_verification.exact_result
+                        if native_correction is not None and source_edge_cpu_verification is not None:
+                            native_audit = _exact_result_audit_summary(native_correction, corrected)
+                            source_edge_cpu_fallback["native_buffers_vs_independent_oracle"] = native_audit
+                            native_correction_audit_failed = not native_audit["match"]
+                        polygon_fragment_exact_result = corrected
                         source_edge_old_minus = sum(
                             layer.old_minus_new_twice_area for layer in polygon_fragment_exact_result.layers
                         )
@@ -1278,11 +1520,9 @@ def _try_gpu_polygon_evidence_path(
                         "exact_boundary_loops_available": True,
                         "source_edge_arrangement": source_edge_result.stats.to_json(),
                     }
-                else:
-                    surplus_start = perf_counter()
-                    surplus_result = run_canonical_surplus_coverage_probe(old_native.buffer, new_native.buffer)
-                    surplus_probe_source = "cpu-canonical"
-                    timings["canonical_surplus_coverage_s"] = perf_counter() - surplus_start
+        gpu_work_performed = _gpu_primary_work_performed(coverage_result, record_delta)
+        if not gpu_cleaned:
+            cleanup_warnings = _release_polygon_gpu(gpu_name, timings)
         if coverage_result is not None:
             exact_result = coverage_result.exact_result
             policy_result = classify_exact_differences(exact_result, config.allowed_regions, failure_policy=config.failure_policy)
@@ -1318,7 +1558,7 @@ def _try_gpu_polygon_evidence_path(
             )
         else:
             layers = ()
-        if old_native is not None and new_native is not None:
+        if old_native is not None and new_native is not None and not native_correction_audit_failed:
             inventory_start = perf_counter()
             if record_delta is not None:
                 polygon_inventory_delta = build_polygon_inventory_delta_from_record_delta(
@@ -1340,8 +1580,6 @@ def _try_gpu_polygon_evidence_path(
             if polygon_fragment_exact_result is not None and source_edge_cpu_fallback is not None
             else f"{str(record_delta_accelerator).upper()} source-edge evidence path produced exact boundary records with GPU source-record deltas and GPU context indexing where supported; CPU retains loop stitching, hole handling, and Markdown formatting."
             if polygon_fragment_exact_result is not None
-            else f"{str(gpu_name).upper()} native polygon extraction failed; CPU gdstk oracle produced complete exact evidence for this audit run."
-            if native_parse_cpu_verification is not None
             else "Canonical source-surplus probe produced exact directional evidence because changed source polygons are independent; arbitrary overlapping polygon XOR remains unsupported."
             if surplus_result is not None and surplus_result.stats.coverage_exact_proven
             else "Canonical source-surplus probe emitted directional component records, but the run remains fail-closed because overlapping surplus polygons require the general GPU polygon XOR engine."
@@ -1353,7 +1591,14 @@ def _try_gpu_polygon_evidence_path(
             if not parse_failures
             else "Requested gpu-polygon evidence engine is fail-closed because native polygon parsing failed before GPU XOR."
         )
-        warnings = (warning_text,)
+        warnings = (warning_text,) + cleanup_warnings
+        if native_correction_audit_failed:
+            warnings += (
+                "Native-buffer correction disagreed with the independently parsed CPU oracle; "
+                "coverage is from the CPU oracle and native inventory is not reported.",
+            )
+        if record_delta is not None:
+            warnings += tuple(f"{failure['stage']}: {failure['reason']}" for failure in coverage_failures)
         exact_fallback = {
             "mode": f"gpu-polygon-{coverage_accelerator}-rect-coverage"
             if coverage_result is not None and coverage_accelerator is not None
@@ -1361,8 +1606,6 @@ def _try_gpu_polygon_evidence_path(
             if polygon_fragment_exact_result is not None and source_edge_cpu_fallback is not None
             else f"gpu-polygon-{record_delta_accelerator}-source-edge-records"
             if polygon_fragment_exact_result is not None
-            else f"gpu-polygon-{gpu_name}-native-parse-cpu-oracle-fallback"
-            if native_parse_cpu_verification is not None
             else "canonical-source-surplus-exact"
             if surplus_result is not None and surplus_result.stats.coverage_exact_proven
             else "canonical-source-surplus-probe"
@@ -1377,8 +1620,6 @@ def _try_gpu_polygon_evidence_path(
             if polygon_fragment_exact_result is not None and source_edge_cpu_fallback is not None
             else "source-edge-boundary-records-complete"
             if polygon_fragment_exact_result is not None
-            else "native-parse-cpu-oracle-corrected"
-            if native_parse_cpu_verification is not None
             else "canonical-source-surplus-exact"
             if surplus_result is not None and surplus_result.stats.coverage_exact_proven
             else "canonical-source-surplus-probe-only"
@@ -1393,8 +1634,7 @@ def _try_gpu_polygon_evidence_path(
             "escalated_layers": [],
             "failures": parse_failures
             + record_delta_failures
-            + component_area_failures
-            + ([] if coverage_result is not None or polygon_fragment_exact_result is not None or surplus_result is not None else coverage_failures)
+            + coverage_failures
             + (
                 []
                 if coverage_result is not None or polygon_fragment_exact_result is not None or (surplus_result is not None and surplus_result.stats.coverage_exact_proven)
@@ -1418,23 +1658,6 @@ def _try_gpu_polygon_evidence_path(
             "gpu_polygon_component_area": polygon_component_area,
             "source_edge_cpu_oracle_fallback": source_edge_cpu_fallback,
         }
-        if native_parse_cpu_verification is not None:
-            exact_fallback["audit_cpu_oracle"] = True
-            exact_fallback["cpu_oracle_audit"] = _exact_result_audit_summary(
-                exact_result,
-                native_parse_cpu_verification.exact_result,
-            )
-            exact_fallback["exact_component_backend"] = native_parse_cpu_verification.exact_component_backend
-            exact_fallback["native_parse_cpu_oracle_fallback"] = {
-                "trigger": "native-polygon-parse-failed",
-                "reason": "GPU native polygon extraction failed before acceleration; CPU gdstk oracle supplied complete exact evidence.",
-                "failures": parse_failures,
-                "exact_component_backend": native_parse_cpu_verification.exact_component_backend,
-            }
-        if backend_info.get("cuda_ctypes_available"):
-            warnings = _release_cuda_device_memory_after_gpu_operation(timings, warnings)
-        if backend_info.get("metal_ctypes_available"):
-            warnings = _release_metal_device_memory_after_gpu_operation(timings, warnings)
         if audit_cpu_oracle and exact_complete:
             audit_start = perf_counter()
             audit_backend = _default_cpu_audit_component_backend(exact_component_backend)
@@ -1442,9 +1665,13 @@ def _try_gpu_polygon_evidence_path(
                 config,
                 exact_component_backend=audit_backend,
                 force_small_component_partition=True,
+                include_inventory=False,
+                allow_sparse_audit=True,
             )
             timings["cpu_oracle_audit_s"] = perf_counter() - audit_start
             audit_summary = _exact_result_audit_summary(exact_result, verification.exact_result)
+            if source_edge_cpu_verification is not None:
+                audit_summary["result_uses_cpu_correction"] = True
             exact_fallback["audit_cpu_oracle"] = True
             exact_fallback["exact_component_backend"] = verification.exact_component_backend
             if (
@@ -1484,6 +1711,7 @@ def _try_gpu_polygon_evidence_path(
                 exact_fallback["source_edge_cpu_oracle_fallback"] = source_edge_cpu_fallback
                 exact_fallback["cpu_oracle_audit_original_mismatch"] = audit_summary
                 audit_summary = _exact_result_audit_summary(exact_result, verification.exact_result)
+                audit_summary["result_uses_cpu_correction"] = True
                 warnings = warnings + (
                     "CPU gdstk audit corrected source-edge GPU evidence; original mismatch is recorded in exact_fallback.cpu_oracle_audit_original_mismatch.",
                 )
@@ -1529,16 +1757,6 @@ def _try_gpu_polygon_evidence_path(
                 if polygon_component_area is not None:
                     _append_gpu_polygon_component_area_markdown(markdown_written.path, polygon_component_area)
                 _record_exact_markdown_artifacts(artifacts, markdown_written)
-            elif native_parse_cpu_verification is not None:
-                markdown_written = write_exact_diff_markdown(
-                    policy_result,
-                    exact_diff_markdown_path,
-                    title="GDS comparator GPU native-parse CPU oracle fallback diff",
-                    source_mode=exact_fallback["mode"],
-                    exact_verification_complete=True,
-                    polygon_inventory_delta=polygon_inventory_delta,
-                )
-                _record_exact_markdown_artifacts(artifacts, markdown_written)
             elif record_delta is not None:
                 _write_gpu_polygon_record_delta_markdown(exact_diff_markdown_path, warnings[0], record_delta)
                 artifacts["exact_diff_markdown"] = str(exact_diff_markdown_path)
@@ -1547,6 +1765,8 @@ def _try_gpu_polygon_evidence_path(
                 artifacts["exact_diff_markdown"] = str(exact_diff_markdown_path)
             timings["markdown_format_s"] = perf_counter() - markdown_start
 
+    if diff_gds_path is not None and exact_complete:
+        artifacts["diff_gds"] = str(write_diff_gds(policy_result, diff_gds_path).path)
     if markdown_path is not None:
         markdown_path = Path(markdown_path)
         markdown_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1572,7 +1792,9 @@ def _try_gpu_polygon_evidence_path(
         polygon_inventory_delta=polygon_inventory_delta,
         exact_complete=exact_complete,
         unsupported_feature_count=unsupported_feature_count,
-        audit_match=(audit_summary or {}).get("match") if isinstance(audit_summary, dict) else None,
+        audit_match=False if native_correction_audit_failed else (
+            audit_summary.get("match") if isinstance(audit_summary, dict) else None
+        ),
     )
     neutral_fields = _neutral_evidence_report_fields(
         status,
@@ -1582,6 +1804,8 @@ def _try_gpu_polygon_evidence_path(
         unsupported_feature_count=unsupported_feature_count,
         vertex_sidecar_path=artifacts.get("vertex_sidecar"),
     )
+    if native_correction_audit_failed:
+        neutral_fields.update(inventory_changed=None, inventory_delta_count=None, coverage_equal_but_inventory_changed=None)
     report = CompareReport(
         status=status,
         exact_verification_complete=exact_complete,
@@ -1598,6 +1822,8 @@ def _try_gpu_polygon_evidence_path(
                 False if cpu_neutral_fallback else coverage_result is not None or polygon_fragment_exact_result is not None
             ),
             "cpu_neutral_fallback": cpu_neutral_fallback,
+            "gpu_work_performed": gpu_work_performed,
+            "gpu_requirement_met": gpu_work_performed if config.require_gpu else None,
             "gpu_record_delta_available": record_delta is not None,
             "canonical_surplus_coverage_available": surplus_result is not None,
             "canonical_surplus_coverage_exact": (
@@ -1626,11 +1852,6 @@ def _try_gpu_polygon_evidence_path(
                     if polygon_component_area is not None
                     else 0
                 )
-                + (
-                    1
-                    if polygon_fragment_exact_result is not None and record_delta is not None and _record_delta_accelerator(record_delta) == "cuda"
-                    else 0
-                )
             ),
             "metal_kernel_count": (
                 (
@@ -1638,15 +1859,10 @@ def _try_gpu_polygon_evidence_path(
                     if record_delta is not None and _record_delta_accelerator(record_delta) == "metal"
                     else 0
                 )
-                + (1 if coverage_result is not None and coverage_result.stats.accelerator == "metal" else 0)
+                + (1 if coverage_result is not None and coverage_result.stats.metal_task_count else 0)
                 + int(
                     polygon_component_area.get("context_metal_kernel_count", 0)
                     if polygon_component_area is not None
-                    else 0
-                )
-                + (
-                    1
-                    if polygon_fragment_exact_result is not None and record_delta is not None and _record_delta_accelerator(record_delta) == "metal"
                     else 0
                 )
             ),
@@ -1676,7 +1892,7 @@ def _try_gpu_polygon_evidence_path(
         },
         timings=timings,
         warnings=warnings,
-        errors=() if audit_cpu_oracle else warnings,
+        errors=warnings if native_correction_audit_failed or not audit_cpu_oracle else (),
         artifacts=artifacts,
         **neutral_fields,
         command=command,
@@ -1696,6 +1912,23 @@ def _try_gpu_polygon_evidence_path(
         artifacts=artifacts,
         timings=timings,
     )
+
+
+def _validate_native_comparison_grid(config: CompareConfig) -> None:
+    from gdstk import gds_units
+
+    try:
+        old = decimal_from_number(gds_units(config.old_path)[1])
+        new = decimal_from_number(gds_units(config.new_path)[1])
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise _GpuComparisonUnavailable(f"unable to read GDS precision: {exc}") from exc
+    requested = config.dbu or config.precision
+    if not old.is_finite() or not new.is_finite() or old <= 0 or new <= 0:
+        raise _GpuComparisonUnavailable("GDS precision must be finite and positive")
+    if old != new or (requested is not None and old != requested):
+        raise _GpuComparisonUnavailable(
+            f"native GPU comparison needs matching source and comparison DBUs (old={old}, new={new}, requested={requested})"
+        )
 
 
 def _gpu_polygon_native_inputs(
@@ -1771,6 +2004,24 @@ def _default_cpu_audit_component_backend(exact_component_backend: str) -> str:
 
 def _record_delta_accelerator(record_delta) -> str:
     return str(getattr(record_delta, "accelerator", "cuda"))
+
+
+def _gpu_primary_work_performed(coverage_result, record_delta) -> bool:
+    if coverage_result is not None:
+        stats = coverage_result.stats
+        return (stats.cuda_task_count > 0 and stats.cuda_kernel_count > 0) or stats.metal_task_count > 0
+    if record_delta is None:
+        return False
+    accelerator = _record_delta_accelerator(record_delta)
+    return getattr(record_delta, f"{accelerator}_kernel_count", 0) > 0
+
+
+def _release_polygon_gpu(gpu_name: object, timings: dict[str, float]) -> tuple[str, ...]:
+    if gpu_name == Backend.CUDA.value:
+        return _release_cuda_device_memory_after_gpu_operation(timings, ())
+    if gpu_name == Backend.METAL.value:
+        return _release_metal_device_memory_after_gpu_operation(timings, ())
+    return ()
 
 
 def _release_cuda_device_memory_after_gpu_operation(timings: dict[str, float], warnings: tuple[str, ...]) -> tuple[str, ...]:
@@ -1864,13 +2115,7 @@ def _audit_fragment_json(fragment: DiffFragment) -> dict[str, object]:
 
 
 def _audit_canonical_points(points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
-    cleaned = _audit_clean_loop_points(points)
-    if not cleaned:
-        return ()
-    candidates: list[tuple[tuple[int, int], ...]] = []
-    for sequence in (cleaned, tuple(reversed(cleaned))):
-        candidates.extend(sequence[index:] + sequence[:index] for index in range(len(sequence)))
-    return min(candidates)
+    return _canonical_valid_points(_audit_clean_loop_points(points))
 
 
 def _audit_clean_loop_points(points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
@@ -2538,6 +2783,8 @@ def _run_full_exact_verification(
     *,
     exact_component_backend: str = "none",
     force_small_component_partition: bool = False,
+    include_inventory: bool = True,
+    allow_sparse_audit: bool = False,
 ) -> _FullExactVerification:
     start = perf_counter()
     old_metadata = read_gds_metadata(config.old_path)
@@ -2549,21 +2796,30 @@ def _run_full_exact_verification(
         if len(common_tops) == 1:
             old_top_name = common_tops[0]
             new_top_name = common_tops[0]
+    grid = resolve_comparison_grid(old_metadata, new_metadata, dbu=config.dbu, precision=config.precision)
+    extract_config = config if config.dbu == grid.grid.meters_per_dbu else replace(config, dbu=grid.grid.meters_per_dbu)
     old_extraction, new_extraction = _extract_pair(
-        config,
+        extract_config,
         old_top_name=old_top_name,
         new_top_name=new_top_name,
     )
     extract_s = perf_counter() - start
     exact_start = perf_counter()
     exact_selection = _select_exact_component_backend(exact_component_backend)
-    exact_result = run_full_exact_oracle(
-        old_extraction.buffer,
-        new_extraction.buffer,
-        component_partition=exact_selection.component_partition,
-        component_executor=exact_selection.executor,
-        force_small_component_partition=force_small_component_partition,
-    )
+    exact_result = None
+    exact_backend = exact_selection.to_json()
+    if allow_sparse_audit and exact_selection.executor is None and old_extraction.buffer.polygon_count >= 4096:
+        exact_result = _run_aligned_sparse_exact_oracle(old_extraction.buffer, new_extraction.buffer)
+        if exact_result is not None:
+            exact_backend["coverage_scope"] = "full-layout-aligned-record-reduction"
+    if exact_result is None:
+        exact_result = run_full_exact_oracle(
+            old_extraction.buffer,
+            new_extraction.buffer,
+            component_partition=exact_selection.component_partition,
+            component_executor=exact_selection.executor,
+            force_small_component_partition=force_small_component_partition,
+        )
     exact_s = perf_counter() - exact_start
     policy_result = classify_exact_differences(
         exact_result,
@@ -2590,8 +2846,8 @@ def _run_full_exact_verification(
         layers=layer_reports,
         extract_s=extract_s,
         exact_s=exact_s,
-        exact_component_backend=exact_selection.to_json(),
-        polygon_inventory_delta=build_polygon_inventory_delta(old_extraction.buffer, new_extraction.buffer),
+        exact_component_backend=exact_backend,
+        polygon_inventory_delta=build_polygon_inventory_delta(old_extraction.buffer, new_extraction.buffer) if include_inventory else None,
     )
 
 
@@ -2699,19 +2955,13 @@ def _select_backend(config: CompareConfig, *, exact: bool = False) -> dict[str, 
         return base | {"name": Backend.CPU.value, "fallback_reason": "exact mode uses the gdstk CPU oracle"}
     if requested == Backend.CUDA:
         if not capabilities.cuda_available:
-            raise ValueError("backend='cuda' requested, but CUDA backend extension is not available")
+            return base | {"name": Backend.CPU.value, "fallback_reason": "CUDA backend runtime is not available"}
         return base | {"name": Backend.CUDA.value, "fallback_reason": None}
     if requested == Backend.METAL:
         if not capabilities.metal_available:
-            raise ValueError("backend='metal' requested, but Metal backend runtime is not available")
+            return base | {"name": Backend.CPU.value, "fallback_reason": "Metal backend runtime is not available"}
         return base | {"name": Backend.METAL.value, "fallback_reason": None}
     if requested == Backend.AUTO:
-        if config.require_gpu:
-            if capabilities.cuda_available:
-                return base | {"name": Backend.CUDA.value, "fallback_reason": None}
-            if capabilities.metal_available:
-                return base | {"name": Backend.METAL.value, "fallback_reason": None}
-            raise ValueError("require_gpu=True but no CUDA or Metal backend runtime is available")
         if capabilities.cuda_available:
             return base | {"name": Backend.CUDA.value, "fallback_reason": None}
         if capabilities.metal_available:
@@ -2733,15 +2983,15 @@ def _run_tile_prefilter(
 
         try:
             return run_cuda_ctypes_tile_prefilter(old_buffer, old_canonical_ids, new_buffer, new_canonical_ids, tile_config)
-        except CudaCtypesUnavailable:
-            pass
+        except CudaCtypesUnavailable as exc:
+            raise _GpuComparisonUnavailable(str(exc)) from exc
     if backend_info.get("name") == Backend.METAL.value:
         from .backends.metal_ctypes import MetalCtypesUnavailable, run_metal_ctypes_tile_prefilter
 
         try:
             return run_metal_ctypes_tile_prefilter(old_buffer, old_canonical_ids, new_buffer, new_canonical_ids, tile_config)
-        except MetalCtypesUnavailable:
-            pass
+        except MetalCtypesUnavailable as exc:
+            raise _GpuComparisonUnavailable(str(exc)) from exc
     try:
         from .backends.cpu_ctypes import run_cpu_ctypes_tile_prefilter
 

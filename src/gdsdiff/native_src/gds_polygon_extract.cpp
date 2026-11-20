@@ -37,6 +37,7 @@ struct Polygon {
 
 struct Reference {
     std::string child;
+    unsigned quarter_turns = 0;
     std::uint64_t columns = 1;
     std::uint64_t rows = 1;
     std::int64_t ox = 0;
@@ -61,8 +62,36 @@ std::int16_t read_i16(const unsigned char* p) {
 }
 
 std::int32_t read_i32(const unsigned char* p) {
-    return (static_cast<std::int32_t>(p[0]) << 24) | (static_cast<std::int32_t>(p[1]) << 16)
-        | (static_cast<std::int32_t>(p[2]) << 8) | static_cast<std::int32_t>(p[3]);
+    const auto value = (static_cast<std::uint32_t>(p[0]) << 24) | (static_cast<std::uint32_t>(p[1]) << 16)
+        | (static_cast<std::uint32_t>(p[2]) << 8) | static_cast<std::uint32_t>(p[3]);
+    return static_cast<std::int32_t>(value & 0x80000000u ? static_cast<std::int64_t>(value) - 0x100000000ll : value);
+}
+
+unsigned read_quarter_turns(const unsigned char* p) {
+    std::uint64_t mantissa = 0;
+    for (int i = 1; i < 8; ++i) {
+        mantissa = (mantissa << 8) | p[i];
+    }
+    if (mantissa == 0 && p[0] == 0) return 0;
+    if (p[1] < 0x10) throw std::runtime_error("invalid ANGLE REAL8 encoding");
+
+    // REAL8 is a 56-bit fraction with a hexadecimal exponent. Reduce the
+    // integer value modulo 360 without rounding nearly orthogonal angles.
+    const int shift = 4 * (static_cast<int>(p[0] & 0x7f) - 64) - 56;
+    unsigned degrees = 0;
+    if (shift < 0) {
+        if (shift <= -56 || (mantissa & ((1ull << -shift) - 1))) {
+            throw std::runtime_error("nonorthogonal reference ANGLE is not supported by native polygon extraction");
+        }
+        degrees = static_cast<unsigned>((mantissa >> -shift) % 360);
+    } else {
+        degrees = static_cast<unsigned>(mantissa % 360);
+        for (int i = 0; i < shift; ++i) degrees = (degrees * 2) % 360;
+    }
+    if (degrees % 90 != 0) {
+        throw std::runtime_error("nonorthogonal reference ANGLE is not supported by native polygon extraction");
+    }
+    return ((p[0] & 0x80) ? (360 - degrees) % 360 : degrees) / 90;
 }
 
 std::string decode_string(const unsigned char* data, std::size_t size) {
@@ -257,7 +286,7 @@ std::pair<std::uint64_t, std::uint64_t> canonical_polygon_hash(const Polygon& po
     return {h0, h1};
 }
 
-std::map<std::string, Cell> parse_gds(const char* path) {
+std::map<std::string, Cell> parse_gds(const char* path, bool& oracle_reuse_eligible) {
     const auto data = read_file(path);
     std::map<std::string, Cell> cells;
     std::size_t offset = 0;
@@ -268,11 +297,14 @@ std::map<std::string, Cell> parse_gds(const char* path) {
     std::int32_t pending_datatype = 0;
     std::string pending_sname;
     Reference pending_reference;
+    unsigned pending_transform_records = 0;
     std::vector<Point> pending_xy;
+    bool saw_endlib = false;
 
     while (offset + 4 <= data.size()) {
         const std::uint16_t record_len = read_u16(data.data() + offset);
         const int record_type = data[offset + 2];
+        const int data_type = data[offset + 3];
         if (record_len < 4 || offset + record_len > data.size()) {
             throw std::runtime_error("invalid GDS record length");
         }
@@ -298,19 +330,24 @@ std::map<std::string, Cell> parse_gds(const char* path) {
             throw std::runtime_error("PATH records are not supported by native polygon extraction");
         case 0x0A:  // SREF
         case 0x0B:  // AREF
+            // The legacy AREF reader applies integer floor to each pitch.
+            if (record_type == 0x0B) oracle_reuse_eligible = false;
             element_kind = record_type;
             pending_reference = Reference{};
+            pending_transform_records = 0;
             pending_sname.clear();
             pending_xy.clear();
             break;
         case 0x0D:  // LAYER
             if (element_kind == 0x08 && payload_size >= 2) {
                 pending_layer = read_i16(payload);
+                if (data_type != 0x02 || payload_size != 2) oracle_reuse_eligible = false;
             }
             break;
         case 0x0E:  // DATATYPE
             if (element_kind == 0x08 && payload_size >= 2) {
                 pending_datatype = read_i16(payload);
+                if (data_type != 0x02 || payload_size != 2) oracle_reuse_eligible = false;
             }
             break;
         case 0x12:  // SNAME
@@ -333,13 +370,39 @@ std::map<std::string, Cell> parse_gds(const char* path) {
             }
             break;
         case 0x10:  // XY
+            if (data_type != 0x03) oracle_reuse_eligible = false;
             pending_xy = parse_xy(payload, payload_size);
             break;
         case 0x1A:  // STRANS
         case 0x1B:  // MAG
         case 0x1C:  // ANGLE
             if (element_kind == 0x0A || element_kind == 0x0B) {
-                throw std::runtime_error("transformed references are not supported by native polygon extraction");
+                const bool is_strans = record_type == 0x1A;
+                const unsigned bit = 1u << (record_type - 0x1A);
+                const char* name = is_strans ? "STRANS" : record_type == 0x1B ? "MAG" : "ANGLE";
+                if (data_type != (is_strans ? 0x01 : 0x05) || payload_size != (is_strans ? 2u : 8u)) {
+                    throw std::runtime_error(std::string("invalid ") + name + " record type or length");
+                }
+                if (pending_transform_records & bit) {
+                    throw std::runtime_error(std::string("duplicate reference ") + name + " record");
+                }
+                pending_transform_records |= bit;
+                if (is_strans) {
+                    if (read_u16(payload) != 0) {
+                        throw std::runtime_error("nonzero reference STRANS flags are not supported by native polygon extraction");
+                    }
+                } else if (record_type == 0x1B) {
+                    constexpr unsigned char unit_magnification[8] = {0x41, 0x10, 0, 0, 0, 0, 0, 0};
+                    if (std::memcmp(payload, unit_magnification, sizeof(unit_magnification)) != 0) {
+                        throw std::runtime_error("non-unit reference MAG is not supported by native polygon extraction");
+                    }
+                } else {
+                    pending_reference.quarter_turns = read_quarter_turns(payload);
+                    if ((payload[0] & 0x7f) > 0x43) oracle_reuse_eligible = false;
+                    if (element_kind == 0x0B && pending_reference.quarter_turns != 0) {
+                        throw std::runtime_error("rotated AREF is not supported by native polygon extraction");
+                    }
+                }
             }
             break;
         case 0x11:  // ENDEL
@@ -354,6 +417,10 @@ std::map<std::string, Cell> parse_gds(const char* path) {
                         polygon_flags(normalized),
                     });
                 }
+                if (pending_xy.size() < 4 || pending_xy.front().x != pending_xy.back().x ||
+                    pending_xy.front().y != pending_xy.back().y) {
+                    oracle_reuse_eligible = false;
+                }
             } else if (element_kind == 0x0A || element_kind == 0x0B) {
                 if (pending_sname.empty()) {
                     throw std::runtime_error("reference missing SNAME");
@@ -361,6 +428,7 @@ std::map<std::string, Cell> parse_gds(const char* path) {
                 if (pending_xy.empty()) {
                     throw std::runtime_error("reference missing XY");
                 }
+                if (element_kind == 0x0A && pending_xy.size() != 1) oracle_reuse_eligible = false;
                 pending_reference.child = pending_sname;
                 pending_reference.ox = pending_xy[0].x;
                 pending_reference.oy = pending_xy[0].y;
@@ -378,17 +446,38 @@ std::map<std::string, Cell> parse_gds(const char* path) {
             if (current_name.empty()) {
                 throw std::runtime_error("cell missing STRNAME");
             }
+            if (cells.count(current_name)) oracle_reuse_eligible = false;
             cells[current_name] = current_cell;
             current_name.clear();
             current_cell = Cell{};
             break;
+        case 0x04:  // ENDLIB
+            saw_endlib = true;
+            if (offset != data.size()) oracle_reuse_eligible = false;
+            break;
+        case 0x00:  // HEADER
+        case 0x01:  // BGNLIB
+        case 0x02:  // LIBNAME
+        case 0x03:  // UNITS
+        case 0x0C:  // TEXT
+        case 0x16:  // TEXTTYPE
+        case 0x17:  // PRESENTATION
+        case 0x19:  // STRING
+        case 0x26:  // ELFLAGS
+        case 0x2B:  // PROPATTR
+        case 0x2C:  // PROPVALUE
+        case 0x2F:  // PLEX
+            break;
         default:
+            // An ignored record can carry geometry in another reader (e.g. BOX).
+            oracle_reuse_eligible = false;
             break;
         }
     }
     if (offset != data.size()) {
         throw std::runtime_error("trailing partial GDS record");
     }
+    if (!saw_endlib) oracle_reuse_eligible = false;
     return cells;
 }
 
@@ -427,17 +516,40 @@ std::int64_t div_floor(std::int64_t numerator, std::uint64_t denominator) {
     return -static_cast<std::int64_t>((static_cast<std::uint64_t>(-numerator) + denominator - 1) / denominator);
 }
 
-void append_shifted_polygon(std::vector<Polygon>& out, const Polygon& polygon, std::int64_t dx, std::int64_t dy) {
-    Polygon shifted;
-    shifted.layer = polygon.layer;
-    shifted.datatype = polygon.datatype;
-    shifted.flags = polygon.flags;
-    shifted.points.reserve(polygon.points.size());
-    for (const auto& point : polygon.points) {
-        shifted.points.push_back(Point{point.x + dx, point.y + dy});
+std::int64_t checked_coordinate(__int128 value) {
+    if (value < std::numeric_limits<std::int64_t>::min() || value > std::numeric_limits<std::int64_t>::max()) {
+        throw std::overflow_error("transformed coordinate exceeds signed 64-bit DBU range");
     }
-    shifted.bbox = BBox{polygon.bbox.x0 + dx, polygon.bbox.y0 + dy, polygon.bbox.x1 + dx, polygon.bbox.y1 + dy};
-    out.push_back(std::move(shifted));
+    return static_cast<std::int64_t>(value);
+}
+
+struct Placement {
+    unsigned quarter_turns = 0;
+    Point origin;
+
+    Point apply(Point point) const {
+        const auto x = static_cast<__int128>(point.x);
+        const auto y = static_cast<__int128>(point.y);
+        switch (quarter_turns) {
+        case 1: return {checked_coordinate(origin.x - y), checked_coordinate(origin.y + x)};
+        case 2: return {checked_coordinate(origin.x - x), checked_coordinate(origin.y - y)};
+        case 3: return {checked_coordinate(origin.x + y), checked_coordinate(origin.y - x)};
+        default: return {checked_coordinate(origin.x + x), checked_coordinate(origin.y + y)};
+        }
+    }
+};
+
+void append_placed_polygon(std::vector<Polygon>& out, const Polygon& polygon, const Placement& placement) {
+    // A rotation/translation preserves vertex distinctness and signed area.
+    Polygon placed{polygon.layer, polygon.datatype, {}, {}, polygon.flags};
+    placed.points.reserve(polygon.points.size());
+    for (const auto& point : polygon.points) {
+        placed.points.push_back(placement.apply(point));
+    }
+    const auto low = placement.apply({polygon.bbox.x0, polygon.bbox.y0});
+    const auto high = placement.apply({polygon.bbox.x1, polygon.bbox.y1});
+    placed.bbox = BBox{std::min(low.x, high.x), std::min(low.y, high.y), std::max(low.x, high.x), std::max(low.y, high.y)};
+    out.push_back(std::move(placed));
 }
 
 void flatten_cell(
@@ -445,8 +557,7 @@ void flatten_cell(
     const std::map<std::string, Cell>& cells,
     std::vector<Polygon>& out,
     std::set<std::string>& visiting,
-    std::int64_t dx,
-    std::int64_t dy) {
+    const Placement& placement) {
     if (visiting.count(name)) {
         throw std::runtime_error("cell reference cycle detected");
     }
@@ -456,22 +567,30 @@ void flatten_cell(
     }
     visiting.insert(name);
     for (const auto& polygon : found->second.polygons) {
-        append_shifted_polygon(out, polygon, dx, dy);
+        append_placed_polygon(out, polygon, placement);
     }
     for (const auto& reference : found->second.references) {
         const std::uint64_t columns = std::max<std::uint64_t>(1, reference.columns);
         const std::uint64_t rows = std::max<std::uint64_t>(1, reference.rows);
+        if (placement.quarter_turns != 0 &&
+            ((columns > 1 && ((reference.cx - reference.ox) % static_cast<std::int64_t>(columns) != 0 ||
+                             (reference.cy - reference.oy) % static_cast<std::int64_t>(columns) != 0)) ||
+             (rows > 1 && ((reference.rx - reference.ox) % static_cast<std::int64_t>(rows) != 0 ||
+                          (reference.ry - reference.oy) % static_cast<std::int64_t>(rows) != 0)))) {
+            throw std::runtime_error("nonintegral AREF pitch under a rotated ancestor is not supported by native polygon extraction");
+        }
         const std::int64_t col_dx = div_floor(reference.cx - reference.ox, columns);
         const std::int64_t col_dy = div_floor(reference.cy - reference.oy, columns);
         const std::int64_t row_dx = div_floor(reference.rx - reference.ox, rows);
         const std::int64_t row_dy = div_floor(reference.ry - reference.oy, rows);
         for (std::uint64_t column = 0; column < columns; ++column) {
             for (std::uint64_t row = 0; row < rows; ++row) {
-                const std::int64_t child_dx = dx + reference.ox + static_cast<std::int64_t>(column) * col_dx
+                const std::int64_t child_x = reference.ox + static_cast<std::int64_t>(column) * col_dx
                     + static_cast<std::int64_t>(row) * row_dx;
-                const std::int64_t child_dy = dy + reference.oy + static_cast<std::int64_t>(column) * col_dy
+                const std::int64_t child_y = reference.oy + static_cast<std::int64_t>(column) * col_dy
                     + static_cast<std::int64_t>(row) * row_dy;
-                flatten_cell(reference.child, cells, out, visiting, child_dx, child_dy);
+                const Placement child{(placement.quarter_turns + reference.quarter_turns) % 4, placement.apply({child_x, child_y})};
+                flatten_cell(reference.child, cells, out, visiting, child);
             }
         }
     }
@@ -493,6 +612,7 @@ struct GdsPolygonExtractResult {
     std::uint32_t* flags;
     std::uint64_t* source_ids;
     std::uint64_t* hashes;
+    std::uint32_t oracle_reuse_eligible;
 };
 
 const char* gds_polygon_extract_last_error() {
@@ -520,14 +640,15 @@ int gds_polygon_extract(const char* path, const char* top_name, GdsPolygonExtrac
             throw std::runtime_error("invalid arguments");
         }
         *out = GdsPolygonExtractResult{};
-        const auto cells = parse_gds(path);
+        bool oracle_reuse_eligible = true;
+        const auto cells = parse_gds(path, oracle_reuse_eligible);
         if (cells.empty()) {
             throw std::runtime_error("no cells found");
         }
         const auto top = select_top(cells, top_name);
         std::vector<Polygon> polygons;
         std::set<std::string> visiting;
-        flatten_cell(top, cells, polygons, visiting, 0, 0);
+        flatten_cell(top, cells, polygons, visiting, Placement{});
 
         std::uint64_t vertex_count = 0;
         for (const auto& polygon : polygons) {
@@ -535,7 +656,13 @@ int gds_polygon_extract(const char* path, const char* top_name, GdsPolygonExtrac
                 throw std::overflow_error("vertex count overflow");
             }
             vertex_count += static_cast<std::uint64_t>(polygon.points.size());
+            constexpr std::int64_t max_oracle_reuse_coordinate = 1ll << 40;
+            if (polygon.bbox.x0 < -max_oracle_reuse_coordinate || polygon.bbox.y0 < -max_oracle_reuse_coordinate ||
+                polygon.bbox.x1 > max_oracle_reuse_coordinate || polygon.bbox.y1 > max_oracle_reuse_coordinate) {
+                oracle_reuse_eligible = false;
+            }
         }
+        out->oracle_reuse_eligible = oracle_reuse_eligible ? 1 : 0;
         out->polygon_count = static_cast<std::uint64_t>(polygons.size());
         out->vertex_count = vertex_count;
         out->polygon_offsets = static_cast<std::uint64_t*>(std::malloc(sizeof(std::uint64_t) * (polygons.size() + 1)));

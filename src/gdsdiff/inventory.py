@@ -64,11 +64,12 @@ class SelectedLayerPresence:
 
 
 def inventory_gds(path: str | Path, *, top_name: str | None = None) -> GdsInventory:
+    """Inventory stored records and geometry layers reachable from a cell."""
     path = Path(path)
     lib = gdstk.read_gds(str(path))
     top = select_top_cell(lib, top_name=top_name)
     reachable = _reachable_cells(top)
-    final_layers = tuple(sorted({LayerSpec(poly.layer, poly.datatype) for poly in top.get_polygons()}))
+    final_layers = _inventory_layers(reachable)
     records = _record_inventory(reachable)
     metadata = GdsMetadata(
         path=path,
@@ -129,20 +130,27 @@ def resolve_selected_layers(
 
 
 def _reachable_cells(top: gdstk.Cell) -> tuple[gdstk.Cell, ...]:
-    seen: set[str] = set()
+    seen = {top.name}
+    pending = [top]
     out: list[gdstk.Cell] = []
-
-    def visit(cell: gdstk.Cell) -> None:
-        if cell.name in seen:
-            return
-        seen.add(cell.name)
+    while pending:
+        cell = pending.pop()
         out.append(cell)
         for ref in cell.references:
-            if isinstance(ref.cell, gdstk.Cell):
-                visit(ref.cell)
-
-    visit(top)
+            child = ref.cell
+            if isinstance(child, gdstk.Cell) and child.name not in seen:
+                seen.add(child.name)
+                pending.append(child)
     return tuple(out)
+
+
+def _inventory_layers(cells: tuple[gdstk.Cell, ...]) -> tuple[LayerSpec, ...]:
+    pairs: set[tuple[int, int]] = set()
+    for cell in cells:
+        # Placements cannot change layer tags. Polygonize paths only in their defining cell.
+        polygons = cell.get_polygons(apply_repetitions=False, depth=0) if cell.paths else cell.polygons
+        pairs.update((polygon.layer, polygon.datatype) for polygon in polygons)
+    return tuple(LayerSpec(*pair) for pair in sorted(pairs))
 
 
 def _record_inventory(cells: tuple[gdstk.Cell, ...]) -> RecordInventory:
