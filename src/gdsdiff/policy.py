@@ -4,9 +4,10 @@ from dataclasses import dataclass, field
 
 import gdstk
 
+from ._boolean_evidence import _checked_gdstk_boolean
 from .config import AllowedRegion, LayerSpec
 from .exact_oracle import (
-    DiffFragment, ExactOracleResult, LayerExactDiff, _checked_gdstk_boolean, _gdstk_points_to_global_dbu, format_twice_area,
+    DiffFragment, ExactOracleResult, LayerExactDiff, _gdstk_points_to_global_dbu, format_twice_area,
 )
 from .geometry import polygon_bbox, polygon_twice_area
 from .semantics import CompareStatus, DifferenceDirection, FailurePolicy
@@ -220,8 +221,9 @@ def _split_fragment_by_regions(
     origin = fragment.bbox[0], fragment.bbox[1]
     fragment_poly = _polygon_from_points(fragment.points, layer, origin)
     masks = [_region_polygon(region, layer, origin) for region in regions]
-    allowed = _checked_gdstk_boolean([fragment_poly], masks, "and", precision=precision)
-    outside = _checked_gdstk_boolean([fragment_poly], masks, "not", precision=precision)
+    options = {"precision": precision, "stage": "policy-classification", "layer": layer}
+    allowed = _checked_gdstk_boolean([fragment_poly], masks, "and", **options)
+    outside = _checked_gdstk_boolean([fragment_poly], masks, "not", **options)
     return _global_points_from_gdstk(allowed, origin), _global_points_from_gdstk(outside, origin)
 
 

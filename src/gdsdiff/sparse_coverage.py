@@ -7,6 +7,7 @@ from time import perf_counter
 
 import numpy as np
 
+from ._boolean_evidence import _BooleanEvidenceError, _checked_gdstk_boolean, _verified_boolean_recovery
 from .config import LayerSpec
 from .exact_diff_markdown import PolygonInventoryDelta, _canonical_inventory_points, _inventory_delta_for_indices
 from .exact_oracle import (
@@ -14,8 +15,6 @@ from .exact_oracle import (
     ExactOracleResult,
     LayerExactDiff,
     _ALIGNED_SPARSE_MAX_CHANGED,
-    _BooleanEvidenceError,
-    _checked_gdstk_boolean,
     _fragment_sort_key,
     _independent_bbox_components,
     _layer_origin,
@@ -143,19 +142,20 @@ def _run_verified_sparse_exact_oracle(
     boolean_start = perf_counter()
     diffs = []
     partitioned = reflected = 0
-    for layer, (old_indices, new_indices, layer_inventory) in retained.items():
-        if not layer_inventory.changed_count:
-            diffs.append(LayerExactDiff(layer))
-            continue
-        a = tuple(_record_points(old, index) for index in old_indices)
-        b = tuple(_record_points(new, index) for index in new_indices)
-        removed, partitioned_a, reflected_a = _directional_difference(layer, a, b)
-        added, partitioned_b, reflected_b = _directional_difference(layer, b, a)
-        partitioned += partitioned_a + partitioned_b
-        reflected += reflected_a + reflected_b
-        if _fragment_vertices(removed).keys() & _fragment_vertices(added).keys():
-            raise _BooleanEvidenceError(f"gdstk {layer.layer}:{layer.datatype} emitted a loop in both directions")
-        diffs.append(LayerExactDiff(layer, removed, added, tuple(sorted(removed + added, key=_fragment_sort_key))))
+    with _verified_boolean_recovery("verified-sparse-coverage"):
+        for layer, (old_indices, new_indices, layer_inventory) in retained.items():
+            if not layer_inventory.changed_count:
+                diffs.append(LayerExactDiff(layer))
+                continue
+            a = tuple(_record_points(old, index) for index in old_indices)
+            b = tuple(_record_points(new, index) for index in new_indices)
+            removed, partitioned_a, reflected_a = _directional_difference(layer, a, b)
+            added, partitioned_b, reflected_b = _directional_difference(layer, b, a)
+            partitioned += partitioned_a + partitioned_b
+            reflected += reflected_a + reflected_b
+            if _fragment_vertices(removed).keys() & _fragment_vertices(added).keys():
+                raise _BooleanEvidenceError(f"gdstk {layer.layer}:{layer.datatype} emitted a loop in both directions")
+            diffs.append(LayerExactDiff(layer, removed, added, tuple(sorted(removed + added, key=_fragment_sort_key))))
 
     return _VerifiedSparseCoverage(
         ExactOracleResult(tuple(diffs)), inventory, proof_s, perf_counter() - boolean_start,
@@ -317,7 +317,8 @@ def _difference(layer, subject, clip, *, reflect=(1, 1)):
     if any(x - ox > (1 << 52) or y - oy > (1 << 52) for points in subject + clip for x, y in points):
         raise _SparseCoverageDeclined("retained coordinates exceed the exact integer range for gdstk")
     polygons = _checked_gdstk_boolean(
-        _to_gdstk_polygons(subject, layer, origin), _to_gdstk_polygons(clip, layer, origin), "not", precision=1.0,
+        _to_gdstk_polygons(subject, layer, origin), _to_gdstk_polygons(clip, layer, origin), "not",
+        precision=1.0, stage="sparse-coverage", layer=layer,
     )
     fragments = []
     for polygon in polygons:

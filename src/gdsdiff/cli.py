@@ -9,7 +9,7 @@ from ._version import __version__
 from .api import compare_gds_files
 from .config import CompareConfig, parse_allowed_region, parse_allowed_whole_layer
 from .inventory import inventory_gds
-from .semantics import Backend, EvidenceEngine, FailurePolicy
+from .semantics import Backend, CompareStatus, EvidenceEngine, FailurePolicy
 from .templates import extract_template, find_template
 
 
@@ -188,15 +188,27 @@ def _main(
         print(f"{prog}: {exc}", file=sys.stderr)
         return 2
 
-    if result.report.exact_fallback.get("mode") in {
+    exact_fallback = result.report.exact_fallback
+    messages: list[str] = []
+    if exact_fallback.get("mode") in {
         "cpu-gdstk-oracle-after-gpu-failure", "gpu-record-delta-plus-cpu-oracle-fallback",
     }:
-        for warning in result.report.warnings:
-            print(f"{prog}: {warning}", file=sys.stderr)
+        messages.extend(result.report.warnings)
     elif result.report.backend.get("gpu_work_performed"):
-        for failure in result.report.exact_fallback.get("failures", ()):
-            if failure.get("stage", "").startswith("gpu-"):
-                print(f"{prog}: {failure['stage']}: {failure['reason']}", file=sys.stderr)
+        for failure in exact_fallback.get("failures", ()):
+            if failure.get("stage"):
+                messages.append(f"{failure['stage']}: {failure['reason']}")
+    if result.status in {CompareStatus.INCOMPLETE_EVIDENCE, CompareStatus.INTERNAL_MISMATCH}:
+        messages.extend(result.report.errors)
+    for diagnostic in exact_fallback.get("gdstk_boolean_diagnostics", ()):
+        if diagnostic["outcome"] == "failed" and not any(diagnostic["message"] in msg for msg in messages):
+            layer = diagnostic["layer"]
+            location = f" on {layer}:{diagnostic['datatype']}" if layer is not None else ""
+            messages.append(
+                f"{diagnostic['stage']}: rejected gdstk {diagnostic['operation']}{location}: {diagnostic['message']}"
+            )
+    for message in dict.fromkeys(messages):
+        print(f"{prog}: {message}", file=sys.stderr)
 
     if not args.quiet:
         report = result.report.to_json_dict()

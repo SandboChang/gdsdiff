@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import os
-import warnings
 from collections import Counter
 from dataclasses import dataclass, field
-from threading import RLock
 from typing import Callable
 
 import numpy as np
 
+from ._boolean_evidence import _BooleanEvidenceError, _checked_gdstk_boolean, _record_boolean_failure
 from .config import LayerSpec
 from .geometry import PolygonBuffer, polygon_bbox, polygon_twice_area
 from .grid import snap_to_grid
@@ -19,23 +18,6 @@ _WORKER_NEW_BY_LAYER = None
 _WORKER_PRECISION = 1.0
 _WORKER_BUFFER = None
 _ALIGNED_SPARSE_MAX_CHANGED = 4096
-_BOOLEAN_WARNING_LOCK = RLock()
-
-
-class _BooleanEvidenceError(RuntimeError):
-    pass
-
-
-def _checked_gdstk_boolean(operand1, operand2, operation: str, *, precision: float):
-    import gdstk
-
-    # gdstk can return partial polygons after a numerical error.
-    with _BOOLEAN_WARNING_LOCK, warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        try:
-            return gdstk.boolean(operand1, operand2, operation, precision=precision)
-        except RuntimeWarning as exc:
-            raise _BooleanEvidenceError(f"gdstk {operation}: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -145,9 +127,16 @@ def run_full_exact_oracle(
             else:
                 try:
                     with context.Pool(processes=worker_count) as pool:
-                        stripe_diffs = tuple(pool.map(_exact_layer_diff_task, flat_tasks, chunksize=1))
+                        outcomes = pool.map(_exact_layer_diff_worker, flat_tasks, chunksize=1)
                 except OSError:
                     stripe_diffs = tuple(_exact_layer_diff_task(task) for task in flat_tasks)
+                else:
+                    failures = [result for result in outcomes if isinstance(result, _BooleanEvidenceError)]
+                    for failure in failures:
+                        _record_boolean_failure(failure)
+                    if failures:
+                        raise failures[0]
+                    stripe_diffs = tuple(outcomes)
         finally:
             _WORKER_OLD_BY_LAYER = None
             _WORKER_NEW_BY_LAYER = None
@@ -213,7 +202,9 @@ def _run_aligned_sparse_exact_oracle(
         def points(buffer: PolygonBuffer) -> tuple[tuple[tuple[int, int], ...], ...]:
             return tuple(tuple((int(x), int(y)) for x, y in buffer.polygon_vertices(index)) for index in indices)
 
-        diffs.append(_exact_layer_diff_task(ExactLayerTask(layer, 1.0, points(old), points(new))))
+        diffs.append(
+            _exact_layer_diff_task(ExactLayerTask(layer, 1.0, points(old), points(new)), stage="aligned-sparse-coverage")
+        )
     return ExactOracleResult(tuple(sorted(diffs, key=lambda diff: diff.layer)))
 
 
@@ -516,9 +507,14 @@ def _bbox_overlaps_closed(left: tuple[int, int, int, int], right: tuple[int, int
     return not (left[2] < right[0] or right[2] < left[0] or left[3] < right[1] or right[3] < left[1])
 
 
-def _exact_layer_diff_task(
-    task: ExactLayerTask,
-) -> LayerExactDiff:
+def _exact_layer_diff_worker(task: ExactLayerTask) -> LayerExactDiff | _BooleanEvidenceError:
+    try:
+        return _exact_layer_diff_task(task)
+    except _BooleanEvidenceError as exc:
+        return exc
+
+
+def _exact_layer_diff_task(task: ExactLayerTask, *, stage: str = "full-oracle") -> LayerExactDiff:
     layer = task.layer
     if task.old_points is None or task.new_points is None:
         if _WORKER_OLD_BY_LAYER is None or _WORKER_NEW_BY_LAYER is None:
@@ -539,12 +535,13 @@ def _exact_layer_diff_task(
     origin = _layer_origin(old_points, new_points)
     old_polys = _to_gdstk_polygons(old_points, layer, origin)
     new_polys = _to_gdstk_polygons(new_points, layer, origin)
-    old_minus = _checked_gdstk_boolean(old_polys, new_polys, "not", precision=precision)
-    new_minus = _checked_gdstk_boolean(new_polys, old_polys, "not", precision=precision)
+    boolean_options = {"precision": precision, "stage": stage, "layer": layer}
+    old_minus = _checked_gdstk_boolean(old_polys, new_polys, "not", **boolean_options)
+    new_minus = _checked_gdstk_boolean(new_polys, old_polys, "not", **boolean_options)
     if clip_bbox is not None:
         clip_rect = [_bbox_rectangle(clip_bbox, layer, origin)]
-        old_minus = _checked_gdstk_boolean(old_minus, clip_rect, "and", precision=precision)
-        new_minus = _checked_gdstk_boolean(new_minus, clip_rect, "and", precision=precision)
+        old_minus = _checked_gdstk_boolean(old_minus, clip_rect, "and", **boolean_options)
+        new_minus = _checked_gdstk_boolean(new_minus, clip_rect, "and", **boolean_options)
     old_fragments, new_fragments = _cancel_symmetric_direction_fragments(
         _fragments_from_gdstk(old_minus, origin),
         _fragments_from_gdstk(new_minus, origin),
@@ -577,7 +574,9 @@ def _union_fragments(polygons: tuple[tuple[tuple[int, int], ...], ...], layer: L
     if not polygons:
         return ()
     origin = _layer_origin(polygons)
-    merged = _checked_gdstk_boolean(_to_gdstk_polygons(polygons, layer, origin), [], "or", precision=1.0)
+    merged = _checked_gdstk_boolean(
+        _to_gdstk_polygons(polygons, layer, origin), [], "or", precision=1.0, stage="full-oracle-merge", layer=layer,
+    )
     return _fragments_from_gdstk(merged, origin)
 
 

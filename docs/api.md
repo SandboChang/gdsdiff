@@ -52,3 +52,10 @@ Use `result.report.to_json_dict()` for schema-validated evidence. A GPU
 requirement failure or audit mismatch can return exit 2 even if verified CPU
 coverage is available. See the [report guide](gdsdiff_report.md) for provenance,
 timings, and artifact comparison.
+
+For a terminal GDSTK Boolean failure, `compare_gds_files` returns
+`incomplete-evidence` with no verified geometry artifacts. Compare helpers
+that operate below the report layer, such as `run_full_exact_oracle`, still
+raise when they cannot produce checked evidence. A serial comparison can
+capture recognized native diagnostics for the report; in threaded calls the
+native stream remains untouched and the same Boolean checks still apply.

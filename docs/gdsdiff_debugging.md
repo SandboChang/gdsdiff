@@ -68,10 +68,16 @@ or when stage timings are nested.
 - GPU acceleration does not implement a general polygon Boolean oracle.
   Rectangle coverage, record deltas, and source-edge work have accelerator
   implementations; sparse and hole-aware corrections may use `gdstk`.
-- A `gdstk` hole-link warning does not certify a polygon. Check the report
-  for a verified sparse recovery, or use the independent CPU audit for
-  complex source-edge results. An unrecovered numerical error is not an
-  exact verdict.
+- A `gdstk` hole-link warning invalidates that Boolean attempt. Inspect
+  `exact_fallback.gdstk_boolean_diagnostics` for its disposition and
+  `exact_fallback.failures` for any failed stage. The warning does not show
+  that the input is malformed. Verified recoveries are quiet when capture is
+  safe; threaded embedding and attached Windows consoles leave native stderr
+  untouched. Use the independent CPU audit to check final coverage and inventory.
+- Standalone three-triangle fixtures in `tests/test_boolean_evidence.py`
+  reproduce both verified and failed hole-link recovery with locked GDSTK.
+  The underlying polygonization problem is tracked in
+  [GDSTK issue 254](https://github.com/heitzmann/gdstk/issues/254).
 - Full-wafer flattening can be impractical; use profile/readback checks unless
   wafer-level geometry itself changed.
 - The comparator is only as stable as the pinned/local `gdstk` polygonization

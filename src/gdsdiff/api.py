@@ -10,6 +10,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Callable
 
+from ._boolean_evidence import _BooleanEvidenceError, _attach_boolean_diagnostics, _collect_boolean_diagnostics
 from .cache import (
     CachedGeometry,
     load_cached_pair_verdict,
@@ -38,7 +39,6 @@ from .exact_oracle import (
     ExactOracleResult,
     LayerExactDiff,
     _ALIGNED_SPARSE_MAX_CHANGED,
-    _BooleanEvidenceError,
     _record_layouts_match,
     _run_aligned_sparse_exact_oracle,
     run_full_exact_oracle,
@@ -181,11 +181,62 @@ def compare_gds_files(
     if config.require_gpu and exact:
         raise ValueError("require_gpu cannot be combined with exact CPU-only comparison")
     backend_info = _select_backend(config, exact=exact)
+    with _collect_boolean_diagnostics() as diagnostics:
+        try:
+            result = _compare_gds_files(
+                config,
+                backend_info=backend_info,
+                diff_gds_path=diff_gds_path,
+                markdown_path=markdown_path,
+                exact_diff_markdown_path=exact_diff_markdown_path,
+                exact=exact,
+                verify_exact_after_fast=verify_exact_after_fast,
+                audit_cpu_oracle=audit_cpu_oracle,
+                use_fast_shortcuts=use_fast_shortcuts,
+                use_structural_guard=use_structural_guard,
+                use_native_geometry_guard=use_native_geometry_guard,
+                exact_component_backend=exact_component_backend,
+                command=command,
+                start=start,
+            )
+        except _BooleanEvidenceError as exc:
+            result = _incomplete_boolean_comparison(
+                config, exc, backend_info=backend_info | {"exact_mode": exact}, command=command, start=start,
+                markdown_path=markdown_path, exact_diff_markdown_path=exact_diff_markdown_path,
+            )
 
+    exact_fallback = diagnostics.attach(result.report.exact_fallback)
+    if json_report_path is None and exact_fallback is result.report.exact_fallback:
+        return result
+    artifacts = result.artifacts
+    if json_report_path is not None:
+        artifacts = artifacts | {"json_report": str(json_report_path)}
+    report = replace(result.report, exact_fallback=exact_fallback, artifacts=artifacts)
+    if json_report_path is not None:
+        report.write_json(json_report_path)
+    return replace(result, report=report, artifacts=artifacts)
+
+
+def _compare_gds_files(
+    config: CompareConfig,
+    *,
+    backend_info: dict[str, object],
+    diff_gds_path: str | Path | None,
+    markdown_path: str | Path | None,
+    exact_diff_markdown_path: str | Path | None,
+    exact: bool,
+    verify_exact_after_fast: bool,
+    audit_cpu_oracle: bool,
+    use_fast_shortcuts: bool,
+    use_structural_guard: bool,
+    use_native_geometry_guard: bool,
+    exact_component_backend: str,
+    command: tuple[str, ...],
+    start: float,
+) -> CompareRunResult:
     old_top_name = config.old_top or config.top
     new_top_name = config.new_top or config.top
     output_paths = {
-        "json_report_path": json_report_path,
         "diff_gds_path": diff_gds_path,
         "markdown_path": markdown_path,
         "exact_diff_markdown_path": exact_diff_markdown_path,
@@ -224,7 +275,6 @@ def compare_gds_files(
             old_top_name=old_top_name,
             new_top_name=new_top_name,
             command=command,
-            json_report_path=json_report_path,
             markdown_path=markdown_path,
             exact_diff_markdown_path=exact_diff_markdown_path,
             verify_exact_after_fast=verify_exact_after_fast,
@@ -241,7 +291,6 @@ def compare_gds_files(
             old_top_name=old_top_name,
             new_top_name=new_top_name,
             command=command,
-            json_report_path=json_report_path,
             markdown_path=markdown_path,
             exact_diff_markdown_path=exact_diff_markdown_path,
             verify_exact_after_fast=verify_exact_after_fast,
@@ -261,7 +310,6 @@ def compare_gds_files(
             old_top_name=old_top_name,
             new_top_name=new_top_name,
             command=command,
-            json_report_path=json_report_path,
             markdown_path=markdown_path,
             exact_diff_markdown_path=exact_diff_markdown_path,
             verify_exact_after_fast=verify_exact_after_fast,
@@ -284,7 +332,6 @@ def compare_gds_files(
             new_top_name=new_top_name,
             exact=exact,
             command=command,
-            json_report_path=json_report_path,
             markdown_path=markdown_path,
             exact_diff_markdown_path=exact_diff_markdown_path,
             verify_exact_after_fast=verify_exact_after_fast,
@@ -301,7 +348,6 @@ def compare_gds_files(
             old_top_name=old_top_name,
             new_top_name=new_top_name,
             command=command,
-            json_report_path=json_report_path,
             markdown_path=markdown_path,
             exact_diff_markdown_path=exact_diff_markdown_path,
             start=start,
@@ -450,7 +496,7 @@ def compare_gds_files(
                 exact_result=exact_result,
                 prefilter=prefilter,
                 windows=windows,
-                exact_fallback=exact_fallback,
+                exact_fallback=_attach_boolean_diagnostics(exact_fallback),
                 fast_status=pair_cache_policy.status.value,
                 exact_verification_complete=exact_verification_complete,
                 layer_exact_status=layer_exact_status,
@@ -569,11 +615,6 @@ def compare_gds_files(
         command=command,
         failure_policy=config.failure_policy,
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
-
     return CompareRunResult(
         status=policy_result.status,
         report=report,
@@ -584,6 +625,59 @@ def compare_gds_files(
         artifacts=artifacts,
         timings=timings,
     )
+
+
+def _incomplete_boolean_comparison(
+    config: CompareConfig,
+    failure: _BooleanEvidenceError,
+    *,
+    backend_info: dict[str, object],
+    command: tuple[str, ...],
+    start: float,
+    markdown_path: str | Path | None,
+    exact_diff_markdown_path: str | Path | None,
+) -> CompareRunResult:
+    status = CompareStatus.INCOMPLETE_EVIDENCE
+    old_top, new_top = config.old_top or config.top, config.new_top or config.top
+    exact_result = ExactOracleResult(())
+    prefilter = CpuTilePrefilterResult(candidate_tiles=())
+    policy_result = classify_exact_differences(exact_result, config.allowed_regions, failure_policy=config.failure_policy)
+    reason = f"{failure.stage}: {failure}"
+    artifacts: dict[str, str] = {}
+    for name, path in (("markdown", markdown_path), ("exact_diff_markdown", exact_diff_markdown_path)):
+        if path is not None:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "# GDS comparator result\n\n## Comparator Evidence\n\n"
+                "- status: `incomplete-evidence`\n- exact_verification_complete: `false`\n\n"
+                f"## Exactness Failure\n\n{reason}\n",
+                encoding="utf-8",
+            )
+            artifacts[name] = str(path)
+    timings = {"total_s": perf_counter() - start}
+    semantics = config.to_json_dict()
+    report = CompareReport(
+        status=status,
+        exact_verification_complete=False,
+        old_input={"path": str(config.old_path), "selected_top": old_top},
+        new_input={"path": str(config.new_path), "selected_top": new_top},
+        semantics=semantics,
+        selection={"old_top": old_top, "new_top": new_top, "layers": semantics["layers"]},
+        backend=backend_info,
+        prefilter=prefilter.to_json(),
+        exact_fallback={
+            "mode": "gdstk-boolean-failed", "window_count": 0, "escalated_layers": [],
+            "failures": [{"stage": failure.stage, "reason": str(failure)}],
+        },
+        allowed_policy=policy_result.effective_policy,
+        timings=timings,
+        errors=(reason,),
+        artifacts=artifacts,
+        command=command,
+        failure_policy=config.failure_policy,
+    )
+    return CompareRunResult(status, report, exact_result, policy_result, prefilter, (), artifacts, timings)
 
 
 def compare_gds_paths(old_path: str | Path, new_path: str | Path, **kwargs) -> CompareRunResult:
@@ -695,7 +789,6 @@ def _try_native_structural_guard_path(
     old_top_name: str | None,
     new_top_name: str | None,
     command: tuple[str, ...],
-    json_report_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
     verify_exact_after_fast: bool,
@@ -833,10 +926,6 @@ def _try_native_structural_guard_path(
         command=command,
         failure_policy=config.failure_policy,
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
     return CompareRunResult(
         status=policy_result.status,
         report=report,
@@ -856,7 +945,6 @@ def _try_native_geometry_guard_path(
     old_top_name: str | None,
     new_top_name: str | None,
     command: tuple[str, ...],
-    json_report_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
     verify_exact_after_fast: bool,
@@ -1004,10 +1092,6 @@ def _try_native_geometry_guard_path(
         command=command,
         failure_policy=config.failure_policy,
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
     return CompareRunResult(
         status=policy_result.status,
         report=report,
@@ -1028,7 +1112,6 @@ def _gpu_failure_cpu_fallback(
     timings: dict[str, float],
     command: tuple[str, ...],
     start: float,
-    json_report_path: str | Path | None,
     diff_gds_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
@@ -1169,10 +1252,6 @@ def _gpu_failure_cpu_fallback(
         command=command,
         failure_policy=config.failure_policy,
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
     return CompareRunResult(status, report, exact_result, policy_result, prefilter, (), artifacts, timings)
 
 
@@ -1183,7 +1262,6 @@ def _try_gpu_polygon_evidence_path(
     old_top_name: str | None,
     new_top_name: str | None,
     command: tuple[str, ...],
-    json_report_path: str | Path | None,
     diff_gds_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
@@ -1212,7 +1290,6 @@ def _try_gpu_polygon_evidence_path(
     cpu_neutral_fallback = backend_info.get("name") == Backend.CPU.value
     gpu_name = backend_info.get("name")
     output_paths = {
-        "json_report_path": json_report_path,
         "diff_gds_path": diff_gds_path,
         "markdown_path": markdown_path,
         "exact_diff_markdown_path": exact_diff_markdown_path,
@@ -1838,13 +1915,7 @@ def _try_gpu_polygon_evidence_path(
                 }
                 exact_result = verification.exact_result
                 polygon_fragment_exact_result = exact_result
-                policy_start = perf_counter()
-                policy_result = classify_exact_differences(
-                    exact_result,
-                    config.allowed_regions,
-                    failure_policy=config.failure_policy,
-                )
-                timings["policy_classification_s"] += perf_counter() - policy_start
+                policy_result = verification.policy_result
                 layers = build_layer_reports(
                     exact_result,
                     policy_result=policy_result,
@@ -2073,10 +2144,6 @@ def _try_gpu_polygon_evidence_path(
         command=command,
         failure_policy=config.failure_policy,
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
     return CompareRunResult(
         status=CompareStatus.coerce(status),
         report=report,
@@ -2551,7 +2618,6 @@ def _try_pair_verdict_cache_path(
     old_top_name: str | None,
     new_top_name: str | None,
     command: tuple[str, ...],
-    json_report_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
     start: float,
@@ -2639,10 +2705,6 @@ def _try_pair_verdict_cache_path(
         command=command,
         failure_policy=config.failure_policy,
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
     return CompareRunResult(
         status=policy_result.status,
         report=report,
@@ -2665,7 +2727,6 @@ def _try_cuda_hierarchy_fast_path(
     new_top_name: str | None,
     exact: bool,
     command: tuple[str, ...],
-    json_report_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
     verify_exact_after_fast: bool,
@@ -2681,13 +2742,12 @@ def _try_cuda_hierarchy_fast_path(
         old_top_name=old_top_name,
         new_top_name=new_top_name,
         command=command,
-        json_report_path=json_report_path,
         markdown_path=markdown_path,
-            exact_diff_markdown_path=exact_diff_markdown_path,
-            verify_exact_after_fast=verify_exact_after_fast,
-            exact_component_backend="none",
-            start=start,
-        )
+        exact_diff_markdown_path=exact_diff_markdown_path,
+        verify_exact_after_fast=verify_exact_after_fast,
+        exact_component_backend="none",
+        start=start,
+    )
     if digest_result is not None:
         return digest_result
     try:
@@ -2767,10 +2827,6 @@ def _try_cuda_hierarchy_fast_path(
                 exact_verification_complete=hierarchy.identical,
             ).path
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
     return CompareRunResult(
         status=policy_result.status,
         report=report,
@@ -2792,7 +2848,6 @@ def _try_accelerated_byte_identity_fast_path(
     old_top_name: str | None,
     new_top_name: str | None,
     command: tuple[str, ...],
-    json_report_path: str | Path | None,
     markdown_path: str | Path | None,
     exact_diff_markdown_path: str | Path | None,
     verify_exact_after_fast: bool,
@@ -2906,10 +2961,6 @@ def _try_accelerated_byte_identity_fast_path(
                 polygon_inventory_delta=verification.polygon_inventory_delta if verification is not None else None,
             ).path
     )
-    if json_report_path is not None:
-        artifacts["json_report"] = str(json_report_path)
-        report = _report_with_artifacts(report, artifacts)
-        report.write_json(json_report_path)
     return CompareRunResult(
         status=policy_result.status,
         report=report,
@@ -3393,37 +3444,3 @@ def _gpu_polygon_unsupported_feature_count(exact_fallback: dict[str, object], *,
         return 0
     failures = exact_fallback.get("failures", ())
     return len(failures) if isinstance(failures, list) else 0
-
-
-def _report_with_artifacts(report: CompareReport, artifacts: dict[str, str]) -> CompareReport:
-    return CompareReport(
-        status=report.status,
-        exact_verification_complete=report.exact_verification_complete,
-        old_input=report.old_input,
-        new_input=report.new_input,
-        semantics=report.semantics,
-        selection=report.selection,
-        backend=report.backend,
-        prefilter=report.prefilter,
-        exact_fallback=report.exact_fallback,
-        layers=report.layers,
-        allowed_policy=report.allowed_policy,
-        unexpected_summary=report.unexpected_summary,
-        timings=report.timings,
-        memory=report.memory,
-        warnings=report.warnings,
-        errors=report.errors,
-        artifacts=artifacts,
-        evidence_status=report.evidence_status,
-        differences_found=report.differences_found,
-        coverage_changed=report.coverage_changed,
-        inventory_changed=report.inventory_changed,
-        coverage_equal_but_inventory_changed=report.coverage_equal_but_inventory_changed,
-        coverage_component_count=report.coverage_component_count,
-        inventory_delta_count=report.inventory_delta_count,
-        vertex_sidecar_path=report.vertex_sidecar_path,
-        unsupported_feature_count=report.unsupported_feature_count,
-        command=report.command,
-        failure_policy=report.failure_policy,
-        tool_version=report.tool_version,
-    )

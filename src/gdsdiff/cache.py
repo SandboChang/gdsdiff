@@ -304,6 +304,8 @@ def load_cached_pair_verdict(config: CompareConfig, *, old_top_name: str | None,
     load_s = perf_counter() - start
     if payload.get("schema_version") != PAIR_VERDICT_SCHEMA_VERSION or payload.get("cache_key") != key:
         return None
+    if payload["exact_fallback"].get("mode") == "windowed" and payload.get("checked_windowed_booleans") is not True:
+        return None
     return CachedPairVerdict(
         fast_status=str(payload["fast_status"]),
         exact_fallback=payload["exact_fallback"],
@@ -340,6 +342,7 @@ def write_cached_pair_verdict(
         {
             "schema_version": PAIR_VERDICT_SCHEMA_VERSION,
             "cache_key": key,
+            "checked_windowed_booleans": True,
             "fast_status": fast_status,
             "exact_fallback": exact_fallback,
             "exact_verification_complete": exact_verification_complete,

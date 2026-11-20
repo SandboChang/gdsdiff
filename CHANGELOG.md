@@ -14,7 +14,9 @@
   Verify omitted records and retained inventory exactly, recover from local
   Boolean warnings only with agreeing full vertices, and report the proof and
   numerical recovery separately from GPU execution.
-- Reject partial Boolean output on numerical warnings if exact recovery fails.
+- Reject partial GDSTK Boolean output in all comparison modes. Keep verified
+  recovery diagnostics in the structured report rather than default stderr;
+  keep unsuccessful recovery visible, even when exact CPU fallback succeeds.
 - Use `GDSDIFF_NATIVE_CACHE_DIR` for cache overrides; the former
   consumer-specific alias is no longer read.
 

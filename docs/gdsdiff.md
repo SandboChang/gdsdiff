@@ -80,9 +80,15 @@ qualify for the exact reduction, keep the normal coverage path.
 An explicit `--audit-cpu-oracle` rereads both files independently after GPU
 cleanup. For the different-record-layout reduction it checks both full
 directional vertices and inventory, not just areas. A mismatch fails closed
-and suppresses unverified native inventory. When `gdstk` warns during a Boolean,
-its partial output is discarded. Unrecoverable numerical errors do not
-produce a successful exact comparison.
+and suppresses unverified native inventory.
+
+`gdsdiff` discards a Boolean attempt's entire output if `gdstk` reports a
+numerical failure. In the CLI, attempts replaced by verified recovery are
+recorded in `exact_fallback.gdstk_boolean_diagnostics` and stay off stderr
+when native capture is safe. Use `--output-dir` or `--json-report` to inspect
+them. A failed recovery remains visible on stderr even if an independent CPU
+fallback completes. If no verified result remains, the comparison exits 2
+with `incomplete-evidence` and does not write a geometry sidecar or diff GDS.
 
 `gdsdiff` is the active command name. The earlier GPU-comparator command name
 is no longer an active entry point.

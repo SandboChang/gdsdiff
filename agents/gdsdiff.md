@@ -35,6 +35,10 @@
   evidence. Check `status`, exactness, `backend.gpu_work_performed`,
   `backend.gpu_requirement_met`, and `exact_fallback.failures`. If the GPU
   attempt fails, report it even when the exact CPU evidence is usable.
+- Check `exact_fallback.gdstk_boolean_diagnostics` when investigating a
+  numerical warning. A verified recovery discarded the original output;
+  it is not a failed comparison or evidence of malformed GDS. A failed
+  attempt remains reportable even when independent CPU evidence is complete.
 - To get an independent reference, rerun the same selection and allowances
   with `--backend cpu --evidence-engine gdstk-oracle`, without `--require-gpu`.
   `--audit-cpu-oracle` instead requests an independent read inside the GPU
@@ -111,7 +115,8 @@
 - Treat GPU bounds as candidate hints. Before omitting a polygon from exact
   correction, prove the exterior record multiset and keep all touching
   same-layer context for every unmatched polygon. Never accept partial
-  Boolean output after a numerical warning.
+  Boolean output after a numerical warning. Apply the same checked GDSTK
+  boundary to full, windowed, sparse, and allowance Booleans.
 
 ## Performance Qualification
 

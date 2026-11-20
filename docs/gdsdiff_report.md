@@ -41,9 +41,19 @@ and `gdstk` computes exact coverage. This is not a CPU-only fallback.
 `exact_fallback.sparse_coverage.coverage_scope` distinguishes the aligned
 shortcut from `full-layout-verified-context-reduction`. The latter reports
 the exterior record proof, retained polygon counts, and the counts of
-partitioned directions and reflected components. A recovered Boolean
-warning may still appear in the runtime log. Recovery requires exact loop
+partitioned directions and reflected components. Recovery requires exact loop
 agreement; a declined reduction is not itself a failed GPU stage.
+
+`exact_fallback.gdstk_boolean_diagnostics` is present when a comparison
+encounters a GDSTK numerical diagnostic. Each entry identifies the stage,
+layer, datatype, Boolean operation, and message. `count` counts occurrences
+of the recorded message, not polygons; a single failed attempt can log
+several native messages. `outcome: "verified-recovery"` identifies an attempt
+whose output was discarded and replaced by evidence verified within that
+stage. `recovery` names that method. A failed attempt has `outcome: "failed"`
+and `recovery: null`. Check the final status and `exact_verification_complete`
+separately: the independent CPU oracle can complete even when the earlier
+local recovery failed. The CLI keeps those failures visible on stderr.
 
 For the verified-context route, `cpu_oracle_audit.coverage_match` and
 `cpu_oracle_audit.inventory_match` report the two independent checks.

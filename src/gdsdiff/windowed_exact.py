@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 
 import gdstk
 
+from ._boolean_evidence import (
+    _BooleanEvidenceError, _checked_gdstk_boolean, _record_boolean_failure, _verified_boolean_recovery,
+)
 from .config import LayerSpec
 from .exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff, run_full_exact_oracle
 from .geometry import PolygonBuffer, polygon_bbox, polygon_twice_area
@@ -68,40 +71,40 @@ def run_windowed_exact_oracle(
         new_indices = new_index.query(window.layer, window.verification_bbox)
         window_tasks.append((window, old_indices, new_indices, max_polygons_per_window))
 
-    task_results = _run_window_tasks(old_buffer, new_buffer, window_tasks, precision=precision)
-    for window, old_minus, new_minus, failure_reason in task_results:
-        if failure_reason is not None:
-            escalated_layers.add(window.layer)
-            failures.append(WindowedExactFailure(window, failure_reason))
-
-    for window, old_minus, new_minus, failure_reason in task_results:
-        if failure_reason is not None or window.layer in escalated_layers:
-            continue
-        direction_points[window.layer]["old_minus_new"].extend(old_minus)
-        direction_points[window.layer]["new_minus_old"].extend(new_minus)
-
-    full_layer_diffs = _full_diffs_by_layer(old_buffer, new_buffer, precision=precision) if escalated_layers else {}
     layer_diffs: list[LayerExactDiff] = []
-    for layer in layers_from_windows:
-        if layer in escalated_layers:
-            layer_diffs.append(
-                full_layer_diffs.get(
-                    layer,
-                    LayerExactDiff(layer=layer),
+    with _verified_boolean_recovery("full-layer-oracle"):
+        task_results = _run_window_tasks(old_buffer, new_buffer, window_tasks, precision=precision)
+        for window, _, _, failure in task_results:
+            if failure is None:
+                continue
+            escalated_layers.add(window.layer)
+            if isinstance(failure, _BooleanEvidenceError):
+                _record_boolean_failure(failure)
+            else:
+                failures.append(WindowedExactFailure(window, failure))
+
+        for window, old_minus, new_minus, _ in task_results:
+            if window.layer not in escalated_layers:
+                direction_points[window.layer]["old_minus_new"].extend(old_minus)
+                direction_points[window.layer]["new_minus_old"].extend(new_minus)
+
+        for layer in layers_from_windows:
+            if layer in escalated_layers:
+                continue
+            try:
+                old_minus = _union_fragments(direction_points[layer]["old_minus_new"], layer, precision=precision)
+                new_minus = _union_fragments(direction_points[layer]["new_minus_old"], layer, precision=precision)
+                xor = _union_fragments(
+                    [fragment.points for fragment in old_minus + new_minus], layer, precision=precision,
                 )
-            )
-            continue
-        old_minus = _union_fragments(direction_points[layer]["old_minus_new"], layer, precision=precision)
-        new_minus = _union_fragments(direction_points[layer]["new_minus_old"], layer, precision=precision)
-        xor = _union_fragments([fragment.points for fragment in old_minus] + [fragment.points for fragment in new_minus], layer, precision=precision)
-        layer_diffs.append(
-            LayerExactDiff(
-                layer=layer,
-                old_minus_new=old_minus,
-                new_minus_old=new_minus,
-                xor=xor,
-            )
-        )
+            except _BooleanEvidenceError:
+                escalated_layers.add(layer)
+                continue
+            layer_diffs.append(LayerExactDiff(layer, old_minus, new_minus, xor))
+
+        if escalated_layers:
+            full = run_full_exact_oracle(old_buffer, new_buffer, layers=escalated_layers, precision=precision)
+            layer_diffs.extend(full.layers)
 
     return WindowedExactResult(
         layers=tuple(sorted(layer_diffs, key=lambda diff: diff.layer)),
@@ -166,6 +169,8 @@ def _compute_window_task(task):
             window,
             precision=precision,
         )
+    except _BooleanEvidenceError as exc:
+        return window, (), (), exc
     except (RuntimeError, ValueError, TypeError) as exc:
         return window, (), (), f"gdstk boolean failed: {exc}"
     return window, old_minus, new_minus, None
@@ -186,12 +191,13 @@ def _compute_window_directional_fragments(
     verification_rect = _bbox_rectangle(window.verification_bbox, window.layer, origin)
     core_rect = _bbox_rectangle(window.core_bbox, window.layer, origin)
 
-    old_clipped = gdstk.boolean(old_polys, [verification_rect], "and", precision=precision) or []
-    new_clipped = gdstk.boolean(new_polys, [verification_rect], "and", precision=precision) or []
-    old_minus = gdstk.boolean(old_clipped, new_clipped, "not", precision=precision) or []
-    new_minus = gdstk.boolean(new_clipped, old_clipped, "not", precision=precision) or []
-    old_core = gdstk.boolean(old_minus, [core_rect], "and", precision=precision) or []
-    new_core = gdstk.boolean(new_minus, [core_rect], "and", precision=precision) or []
+    options = {"precision": precision, "stage": "windowed-oracle", "layer": window.layer}
+    old_clipped = _checked_gdstk_boolean(old_polys, [verification_rect], "and", **options)
+    new_clipped = _checked_gdstk_boolean(new_polys, [verification_rect], "and", **options)
+    old_minus = _checked_gdstk_boolean(old_clipped, new_clipped, "not", **options)
+    new_minus = _checked_gdstk_boolean(new_clipped, old_clipped, "not", **options)
+    old_core = _checked_gdstk_boolean(old_minus, [core_rect], "and", **options)
+    new_core = _checked_gdstk_boolean(new_minus, [core_rect], "and", **options)
     return _global_points_from_gdstk(old_core, origin), _global_points_from_gdstk(new_core, origin)
 
 
@@ -242,7 +248,7 @@ def _union_fragments(
     origin = _points_origin(polygons)
     ox, oy = origin
     local = [gdstk.Polygon([(x - ox, y - oy) for x, y in points], layer=layer.layer, datatype=layer.datatype) for points in polygons]
-    merged = gdstk.boolean(local, [], "or", precision=precision) or []
+    merged = _checked_gdstk_boolean(local, [], "or", precision=precision, stage="windowed-merge", layer=layer)
     return _fragments_from_gdstk(merged, origin)
 
 
@@ -259,12 +265,3 @@ def _fragments_from_gdstk(polygons: list[gdstk.Polygon], origin: tuple[int, int]
 
 def _points_origin(polygons: list[tuple[tuple[int, int], ...]]) -> tuple[int, int]:
     return min(point[0] for polygon in polygons for point in polygon), min(point[1] for polygon in polygons for point in polygon)
-
-
-def _full_diffs_by_layer(
-    old_buffer: PolygonBuffer,
-    new_buffer: PolygonBuffer,
-    *,
-    precision: float,
-) -> dict[LayerSpec, LayerExactDiff]:
-    return {layer_diff.layer: layer_diff for layer_diff in run_full_exact_oracle(old_buffer, new_buffer, precision=precision).layers}
