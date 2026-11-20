@@ -44,6 +44,9 @@ an independent CPU reference. Pass `audit_cpu_oracle=True` to
 `compare_gds_files` to request a separate read of both inputs after GPU
 cleanup. That audit is different from the normal sparse route that runs exact
 `gdstk` coverage on native buffers while CUDA compares source records.
+When the sparse route verifies different record layouts, the audit compares
+coverage and source inventory separately. It does not reuse the GPU's list
+of candidate changes.
 
 Use `result.report.to_json_dict()` for schema-validated evidence. A GPU
 requirement failure or audit mismatch can return exit 2 even if verified CPU

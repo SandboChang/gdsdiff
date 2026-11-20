@@ -17,7 +17,10 @@ native acceleration must include focused tests and compatibility notes. Keep
 CPU-only operation fully supported.
 
 For acceleration changes, qualify the full geometry and inventory evidence
-against the independent CPU oracle before reporting timings. See the
+against the independent CPU oracle before reporting timings. For release
+compatibility, compare verified revisions in separate pinned environments.
+Record deliberate changes separately from regressions. Use synthetic GDS
+fixtures in durable tests; keep external layouts out of the repository. See the
 [benchmark instructions](benchmarks/gdsdiff/README.md) and keep the
 [user guide](docs/gdsdiff.md), [report guide](docs/gdsdiff_report.md), and
 [agent workflow](agents/gdsdiff.md) aligned with the shipped behavior.

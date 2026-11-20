@@ -69,17 +69,20 @@ compares integer vertices and retains all common records whose bounds touch a
 changed polygon. The exact backend reports when this reduction was used.
 
 On CUDA, when the boundary engine detects nested loops that would require
-exact hole correction, it can stop the remaining assembly early. The GPU
-supplies inventory evidence and `gdstk` computes coverage from the verified
-aligned native buffers. The report uses `gpu-polygon-cuda-record-delta-sparse-gdstk`
-and records the attempt in `native_sparse_coverage_s`. Other edits, or those
-that do not qualify for the exact reduction, keep the normal coverage path.
+exact hole correction, it can stop the remaining assembly early. This also
+works when sparse edits change polygon counts or vertex offsets: the engine
+verifies all omitted records, keeps touching same-layer context, and computes
+exact inventory from the retained records. `gdstk` computes coverage on CPU.
+The report uses `gpu-polygon-cuda-record-delta-sparse-gdstk` and records the
+attempt in `native_sparse_coverage_s`. Other edits, or those that do not
+qualify for the exact reduction, keep the normal coverage path.
 
-When nested boundaries need hole-aware correction, supported native inputs can
-reuse their already-extracted polygon buffers. An explicit `--audit-cpu-oracle`
-still rereads both files independently after GPU cleanup and checks the exact
-vertices, not just the areas. A mismatch in native-buffer coverage fails
-closed and suppresses unverified inventory.
+An explicit `--audit-cpu-oracle` rereads both files independently after GPU
+cleanup. For the different-record-layout reduction it checks both full
+directional vertices and inventory, not just areas. A mismatch fails closed
+and suppresses unverified native inventory. When `gdstk` warns during a Boolean,
+its partial output is discarded. Unrecoverable numerical errors do not
+produce a successful exact comparison.
 
 `gdsdiff` is the active command name. The earlier GPU-comparator command name
 is no longer an active entry point.

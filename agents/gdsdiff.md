@@ -38,8 +38,10 @@
 - To get an independent reference, rerun the same selection and allowances
   with `--backend cpu --evidence-engine gdstk-oracle`, without `--require-gpu`.
   `--audit-cpu-oracle` instead requests an independent read inside the GPU
-  run, after device cleanup. Neither is the same as `gdstk` coverage computed
-  from already-packed native buffers.
+  run, after device cleanup. On verified sparse edits with different record
+  layouts, it derives candidate bounds independently and checks both coverage
+  and inventory. Neither is the same as `gdstk` coverage computed from
+  already-packed native buffers.
 
 ## Comparator Role And Report Semantics
 
@@ -106,6 +108,10 @@
   such as `cuda_release_s` for the CUDA backend.
 - Optional CPU audit work must run after GPU cleanup, not while retaining the
   GPU context.
+- Treat GPU bounds as candidate hints. Before omitting a polygon from exact
+  correction, prove the exterior record multiset and keep all touching
+  same-layer context for every unmatched polygon. Never accept partial
+  Boolean output after a numerical warning.
 
 ## Performance Qualification
 

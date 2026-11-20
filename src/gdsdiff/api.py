@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
@@ -26,6 +27,7 @@ from .design_history import render_design_history_entry
 from .diff_gds import write_diff_gds
 from .exact_diff_markdown import (
     ExactDiffMarkdownWriteResult,
+    _canonical_inventory_points,
     build_polygon_inventory_delta,
     build_polygon_inventory_delta_from_record_delta,
     write_exact_diff_markdown,
@@ -36,6 +38,8 @@ from .exact_oracle import (
     ExactOracleResult,
     LayerExactDiff,
     _ALIGNED_SPARSE_MAX_CHANGED,
+    _BooleanEvidenceError,
+    _record_layouts_match,
     _run_aligned_sparse_exact_oracle,
     run_full_exact_oracle,
 )
@@ -55,6 +59,13 @@ from .polygon_components import (
 from .report import CompareReport, build_layer_reports
 from .rect_coverage import RectCoverageUnsupported, run_cuda_rectangle_coverage_diff, run_metal_rectangle_coverage_diff
 from .semantics import Backend, CompareStatus, EvidenceEngine, exit_code_for_status
+from .sparse_coverage import (
+    _SparseCandidateMismatch,
+    _SparseCoverageDeclined,
+    _fragment_vertices,
+    _record_delta_bounds,
+    _run_verified_sparse_exact_oracle,
+)
 from .spatial import SpatialIndex
 from .source_edge_diff import exact_result_from_source_edges
 from .surplus_coverage import run_record_delta_surplus_coverage_probe
@@ -1024,15 +1035,23 @@ def _gpu_failure_cpu_fallback(
     warnings: tuple[str, ...] = (),
     native_inputs: tuple[dict[str, object], dict[str, object]] | None = None,
     record_delta=None,
+    cpu_failure: Exception | None = None,
+    allow_verified_sparse: bool = False,
 ) -> CompareRunResult:
     fallback_start = perf_counter()
     verification = None
     failures = list(failures)
     gpu_failure = f"{failures[0]['stage']}: {failures[0]['reason']}"
-    try:
-        verification = _run_full_exact_verification(config, force_small_component_partition=True, allow_sparse_audit=True)
-    except (ValueError, RuntimeError, OSError, OverflowError, MemoryError) as exc:
-        failures.append({"stage": "cpu-fallback", "reason": str(exc) or type(exc).__name__})
+    if cpu_failure is None:
+        try:
+            verification = _run_full_exact_verification(
+                config, force_small_component_partition=True, allow_sparse_audit=True,
+                allow_verified_sparse=allow_verified_sparse,
+            )
+        except (ValueError, RuntimeError, OSError, OverflowError, MemoryError) as exc:
+            cpu_failure = exc
+    if cpu_failure is not None:
+        failures.append({"stage": "cpu-fallback", "reason": str(cpu_failure) or type(cpu_failure).__name__})
     timings["cpu_fallback_s"] = perf_counter() - fallback_start
     complete = verification is not None
     gpu_work_performed = _gpu_primary_work_performed(None, record_delta)
@@ -1178,6 +1197,9 @@ def _try_gpu_polygon_evidence_path(
     record_delta = None
     coverage_result = None
     sparse_exact_result = None
+    verified_sparse = None
+    tried_unaligned_sparse = False
+    sparse_decline_reason = None
     surplus_result = None
     surplus_probe_source = None
     polygon_fragment_exact_result = None
@@ -1396,11 +1418,27 @@ def _try_gpu_polygon_evidence_path(
                 )
 
                 def sparse_coverage_after_nested():
+                    nonlocal verified_sparse, tried_unaligned_sparse, sparse_decline_reason
                     sparse_start = perf_counter()
                     try:
-                        return _run_aligned_sparse_exact_oracle(
+                        aligned = _run_aligned_sparse_exact_oracle(
                             old_native.buffer, new_native.buffer, reject_flagged_context=True,
                         )
+                        if aligned is not None or _record_layouts_match(old_native.buffer, new_native.buffer):
+                            return aligned
+                        tried_unaligned_sparse = True
+                        bounds = _record_delta_bounds(old_native.buffer, new_native.buffer, record_delta)
+                        verified_sparse = _run_verified_sparse_exact_oracle(
+                            old_native.buffer, new_native.buffer, candidate_bounds=bounds,
+                        )
+                        timings["native_sparse_proof_s"] = verified_sparse.proof_s
+                        timings["native_sparse_boolean_s"] = verified_sparse.boolean_s
+                        return verified_sparse.exact_result
+                    except _SparseCoverageDeclined as exc:
+                        sparse_decline_reason = str(exc)
+                        if isinstance(exc, _SparseCandidateMismatch):
+                            coverage_failures.append({"stage": "gpu-record-delta-proof", "reason": str(exc)})
+                        return None
                     except (ValueError, RuntimeError, OSError, OverflowError, MemoryError) as exc:
                         coverage_failures.append({"stage": "native-sparse-coverage", "reason": str(exc) or type(exc).__name__})
                         return None
@@ -1471,18 +1509,35 @@ def _try_gpu_polygon_evidence_path(
                         gpu_cleaned = True
                         fallback_start = perf_counter()
                         native_correction = None
-                        if old_native.oracle_reuse_eligible and new_native.oracle_reuse_eligible:
+                        if not tried_unaligned_sparse and old_native.oracle_reuse_eligible and new_native.oracle_reuse_eligible:
                             native_start = perf_counter()
-                            native_correction = _run_aligned_sparse_exact_oracle(old_native.buffer, new_native.buffer)
+                            try:
+                                native_correction = _run_aligned_sparse_exact_oracle(old_native.buffer, new_native.buffer)
+                            except _BooleanEvidenceError as exc:
+                                coverage_failures.append({"stage": "native-hole-correction", "reason": str(exc)})
                             timings["source_edge_native_buffer_correction_s"] = perf_counter() - native_start
 
                         if native_correction is None or audit_cpu_oracle:
-                            source_edge_cpu_verification = _run_full_exact_verification(
-                                config,
-                                exact_component_backend="gdstk",
-                                include_inventory=False,
-                                allow_sparse_audit=True,
-                            )
+                            try:
+                                source_edge_cpu_verification = _run_full_exact_verification(
+                                    config,
+                                    exact_component_backend="gdstk",
+                                    include_inventory=tried_unaligned_sparse,
+                                    allow_sparse_audit=True,
+                                    allow_verified_sparse=tried_unaligned_sparse,
+                                )
+                            except (ValueError, RuntimeError, OSError, OverflowError, MemoryError) as exc:
+                                timings["source_edge_cpu_oracle_fallback_s"] = perf_counter() - fallback_start
+                                return _gpu_failure_cpu_fallback(
+                                    config, backend_info,
+                                    failures=coverage_failures + [{"stage": "exact-hole-correction", "reason": str(exc)}],
+                                    timings=timings, warnings=cleanup_warnings, record_delta=record_delta,
+                                    native_inputs=(
+                                        _native_polygon_input_json(config.old_path, old_top_name, old_native),
+                                        _native_polygon_input_json(config.new_path, new_top_name, new_native),
+                                    ),
+                                    cpu_failure=exc, command=command, start=start, **output_paths,
+                                )
                             corrected = source_edge_cpu_verification.exact_result
                             correction_backend = source_edge_cpu_verification.exact_component_backend
                             correction_input = "independent-gdstk-extraction"
@@ -1587,7 +1642,20 @@ def _try_gpu_polygon_evidence_path(
             layer_exact_status = "complete" if exact_complete else "canonical-source-surplus-probe"
         if layer_exact_status is not None:
             policy_start = perf_counter()
-            policy_result = classify_exact_differences(exact_result, config.allowed_regions, failure_policy=config.failure_policy)
+            try:
+                policy_result = classify_exact_differences(exact_result, config.allowed_regions, failure_policy=config.failure_policy)
+            except _BooleanEvidenceError as exc:
+                timings["policy_classification_s"] += perf_counter() - policy_start
+                return _gpu_failure_cpu_fallback(
+                    config, backend_info,
+                    failures=coverage_failures + [{"stage": "policy-classification", "reason": str(exc)}],
+                    timings=timings, warnings=cleanup_warnings, record_delta=record_delta,
+                    native_inputs=(
+                        _native_polygon_input_json(config.old_path, old_top_name, old_native),
+                        _native_polygon_input_json(config.new_path, new_top_name, new_native),
+                    ),
+                    allow_verified_sparse=tried_unaligned_sparse, command=command, start=start, **output_paths,
+                )
             timings["policy_classification_s"] += perf_counter() - policy_start
             layer_start = perf_counter()
             layer_presence, layer_counts = _layer_summaries(old_native.buffer, new_native.buffer)
@@ -1606,6 +1674,8 @@ def _try_gpu_polygon_evidence_path(
         warning_text = (
             f"{str(coverage_accelerator).upper()} rectangle coverage engine produced exact gpu-polygon evidence for rectangle-only input; arbitrary non-rectangle polygon XOR is still unsupported."
             if coverage_result is not None
+            else "CUDA compared source records; gdstk computed exact coverage from verified native polygons and their context."
+            if verified_sparse is not None
             else "CUDA compared source records; gdstk computed exact coverage from aligned sparse native polygon buffers."
             if sparse_exact_result is not None
             else f"{str(record_delta_accelerator).upper()} source-edge evidence detected hole-like topology; final exact evidence was corrected with the CPU gdstk oracle while GPU source-record and context evidence were retained."
@@ -1701,18 +1771,41 @@ def _try_gpu_polygon_evidence_path(
                 "input": "native-polygon-buffers",
                 "trigger": "nested-direction-fragments",
             }
+            if verified_sparse is not None:
+                exact_fallback["sparse_coverage"].update(verified_sparse.to_json())
+        if sparse_decline_reason is not None:
+            exact_fallback["sparse_coverage_declined"] = sparse_decline_reason
         if audit_cpu_oracle and exact_complete:
             audit_start = perf_counter()
             audit_backend = _default_cpu_audit_component_backend(exact_component_backend)
-            verification = source_edge_cpu_verification or _run_full_exact_verification(
-                config,
-                exact_component_backend=audit_backend,
-                force_small_component_partition=True,
-                include_inventory=False,
-                allow_sparse_audit=True,
-            )
+            try:
+                verification = source_edge_cpu_verification or _run_full_exact_verification(
+                    config,
+                    exact_component_backend=audit_backend,
+                    force_small_component_partition=True,
+                    include_inventory=verified_sparse is not None,
+                    allow_sparse_audit=True,
+                    allow_verified_sparse=verified_sparse is not None,
+                )
+            except (ValueError, RuntimeError, OSError, OverflowError, MemoryError) as exc:
+                timings["cpu_oracle_audit_s"] = perf_counter() - audit_start
+                return _gpu_failure_cpu_fallback(
+                    config, backend_info,
+                    failures=[{"stage": "cpu-oracle-audit", "reason": str(exc)}], timings=timings,
+                    warnings=cleanup_warnings, record_delta=record_delta, cpu_failure=exc,
+                    native_inputs=(
+                        _native_polygon_input_json(config.old_path, old_top_name, old_native),
+                        _native_polygon_input_json(config.new_path, new_top_name, new_native),
+                    ),
+                    command=command, start=start, **output_paths,
+                )
             timings["cpu_oracle_audit_s"] = perf_counter() - audit_start
-            audit_summary = _exact_result_audit_summary(exact_result, verification.exact_result)
+            if verified_sparse is not None:
+                audit_summary = _verified_sparse_audit_summary(
+                    exact_result, verified_sparse.inventory, verification,
+                )
+            else:
+                audit_summary = _exact_result_audit_summary(exact_result, verification.exact_result)
             if source_edge_cpu_verification is not None:
                 audit_summary["result_uses_cpu_correction"] = True
             exact_fallback["audit_cpu_oracle"] = True
@@ -1726,7 +1819,7 @@ def _try_gpu_polygon_evidence_path(
                 exact_fallback["sparse_coverage"]["final_input"] = "independent-gdstk-extraction"
                 audit_summary["result_uses_cpu_correction"] = True
                 warnings += (
-                    "Native sparse coverage disagreed with the independently parsed CPU oracle; "
+                    "Native sparse evidence disagreed with the independently parsed CPU oracle; "
                     "coverage is from the CPU oracle and native inventory is not reported.",
                 )
             elif (
@@ -1777,7 +1870,13 @@ def _try_gpu_polygon_evidence_path(
                 warnings = warnings + ("CPU gdstk audit did not match GPU evidence; see exact_fallback.cpu_oracle_audit.",)
         if old_native is not None and new_native is not None and not native_oracle_audit_failed:
             inventory_start = perf_counter()
-            if record_delta is not None:
+            if verified_sparse is not None:
+                polygon_inventory_delta = verified_sparse.inventory
+                timings["polygon_inventory_delta_source"] = "verified-sparse-record-context"
+            elif source_edge_cpu_verification is not None and source_edge_cpu_verification.polygon_inventory_delta is not None:
+                polygon_inventory_delta = source_edge_cpu_verification.polygon_inventory_delta
+                timings["polygon_inventory_delta_source"] = "independent-gdstk-extraction"
+            elif record_delta is not None:
                 polygon_inventory_delta = build_polygon_inventory_delta_from_record_delta(
                     old_native.buffer,
                     new_native.buffer,
@@ -1968,7 +2067,7 @@ def _try_gpu_polygon_evidence_path(
         },
         timings=timings,
         warnings=warnings,
-        errors=warnings if native_oracle_audit_failed or not audit_cpu_oracle else (),
+        errors=warnings if native_oracle_audit_failed or (not audit_cpu_oracle and verified_sparse is None) else (),
         artifacts=artifacts,
         **neutral_fields,
         command=command,
@@ -2146,6 +2245,39 @@ def _exact_result_audit_summary(gpu_result: ExactOracleResult, cpu_result: Exact
         "mismatch_count": len(mismatches),
         "mismatches": mismatches[:20],
         "truncated_mismatch_count": max(0, len(mismatches) - 20),
+    }
+
+
+def _verified_sparse_audit_summary(native_result, native_inventory, verification) -> dict[str, object]:
+    def directions(result):
+        return {
+            layer.layer: (_fragment_vertices(layer.old_minus_new), _fragment_vertices(layer.new_minus_old))
+            for layer in result.layers
+            if layer.old_minus_new or layer.new_minus_old
+        }
+
+    def inventory_records(inventory):
+        return Counter(
+            (record.layer, record.datatype, record.direction, _canonical_inventory_points(record.points))
+            for record in inventory.removed + inventory.added
+        )
+
+    native, cpu = directions(native_result), directions(verification.exact_result)
+    changed_layers = [layer for layer in sorted(native.keys() | cpu.keys()) if native.get(layer) != cpu.get(layer)]
+    cpu_inventory = verification.polygon_inventory_delta
+    inventory_match = cpu_inventory is not None and inventory_records(native_inventory) == inventory_records(cpu_inventory)
+    mismatches = [{"layer": [layer.layer, layer.datatype]} for layer in changed_layers]
+    if not inventory_match:
+        mismatches.insert(0, {"kind": "source-polygon-inventory"})
+    return {
+        "oracle": "gdstk-full-exact",
+        "match": not mismatches,
+        "coverage_match": not changed_layers,
+        "inventory_match": inventory_match,
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches[:20],
+        "truncated_mismatch_count": max(0, len(mismatches) - 20),
+        "comparison": "full-integer-vertex-loops-and-inventory",
     }
 
 
@@ -2860,6 +2992,7 @@ def _run_full_exact_verification(
     force_small_component_partition: bool = False,
     include_inventory: bool = True,
     allow_sparse_audit: bool = False,
+    allow_verified_sparse: bool = False,
 ) -> _FullExactVerification:
     start = perf_counter()
     old_metadata = read_gds_metadata(config.old_path)
@@ -2882,8 +3015,19 @@ def _run_full_exact_verification(
     exact_start = perf_counter()
     exact_selection = _select_exact_component_backend(exact_component_backend)
     exact_result = None
+    verified_sparse = None
     exact_backend = exact_selection.to_json()
-    if allow_sparse_audit and exact_selection.executor is None and old_extraction.buffer.polygon_count >= 4096:
+    if allow_verified_sparse and exact_selection.executor is None:
+        try:
+            verified_sparse = _run_verified_sparse_exact_oracle(old_extraction.buffer, new_extraction.buffer)
+        except _SparseCoverageDeclined as exc:
+            exact_backend["sparse_coverage_declined"] = str(exc)
+        else:
+            exact_result = verified_sparse.exact_result
+            exact_backend.update(verified_sparse.to_json())
+            exact_backend["sparse_proof_s"] = verified_sparse.proof_s
+            exact_backend["sparse_boolean_s"] = verified_sparse.boolean_s
+    if exact_result is None and allow_sparse_audit and exact_selection.executor is None and old_extraction.buffer.polygon_count >= 4096:
         exact_result = _run_aligned_sparse_exact_oracle(old_extraction.buffer, new_extraction.buffer)
         if exact_result is not None:
             exact_backend["coverage_scope"] = "full-layout-aligned-record-reduction"
@@ -2909,6 +3053,12 @@ def _run_full_exact_verification(
         polygon_counts_by_layer=layer_counts,
         exact_status="complete",
     )
+    inventory = None
+    if include_inventory:
+        inventory = (
+            verified_sparse.inventory if verified_sparse is not None
+            else build_polygon_inventory_delta(old_extraction.buffer, new_extraction.buffer)
+        )
     return _FullExactVerification(
         exact_result=exact_result,
         policy_result=policy_result,
@@ -2923,7 +3073,7 @@ def _run_full_exact_verification(
         extract_s=extract_s,
         exact_s=exact_s,
         exact_component_backend=exact_backend,
-        polygon_inventory_delta=build_polygon_inventory_delta(old_extraction.buffer, new_extraction.buffer) if include_inventory else None,
+        polygon_inventory_delta=inventory,
     )
 
 

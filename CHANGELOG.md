@@ -10,6 +10,13 @@
 - Stop assembling boundaries once eligible CUDA comparisons prove they need
   exact hole correction. Then use sparse gdstk coverage on the aligned native
   buffers and keep the CUDA inventory evidence.
+- Correct sparse hole edits even when polygon counts or vertex offsets differ.
+  Verify omitted records and retained inventory exactly, recover from local
+  Boolean warnings only with agreeing full vertices, and report the proof and
+  numerical recovery separately from GPU execution.
+- Reject partial Boolean output on numerical warnings if exact recovery fails.
+- Use `GDSDIFF_NATIVE_CACHE_DIR` for cache overrides; the former
+  consumer-specific alias is no longer read.
 
 ## 0.2.0
 
@@ -32,7 +39,7 @@
 
 ## 0.1.0rc1 - 2026-07-17
 
-- Extract `gdsdiff` from `scgds` as an independently installable package while
+- Extract `gdsdiff` as an independently installable package while
   preserving its comparator history and public behavior.
 - Replaced executable pickle geometry caches with versioned JSON/NumPy caches.
 - Added side-effect-free CUDA inspection, explicit preparation, stronger native

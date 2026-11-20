@@ -29,7 +29,7 @@ Important top-level fields:
 ## Check Exactness And GPU Use
 
 Check `exact_verification_complete` together with `status` and
-`exit_code_category`. A complete CPU fallback does not satisfy
+`exit_code_category`. A CPU-only fallback does not satisfy
 `--require-gpu`; use `backend.gpu_work_performed` and
 `backend.gpu_requirement_met`, not availability alone. The failure stage and
 reason appear in `exact_fallback.failures`; `cpu_evidence_status` can record
@@ -37,11 +37,18 @@ the independent CPU verdict when the requested GPU run failed.
 
 `exact_fallback.mode` tells you where coverage came from. In
 `gpu-polygon-cuda-record-delta-sparse-gdstk`, CUDA compares source polygons
-for inventory, and `exact_fallback.sparse_coverage` describes the exact
-`gdstk` coverage reduction. This is not a CPU-only fallback. An
+and `gdstk` computes exact coverage. This is not a CPU-only fallback.
+`exact_fallback.sparse_coverage.coverage_scope` distinguishes the aligned
+shortcut from `full-layout-verified-context-reduction`. The latter reports
+the exterior record proof, retained polygon counts, and the counts of
+partitioned directions and reflected components. A recovered Boolean
+warning may still appear in the runtime log. Recovery requires exact loop
+agreement; a declined reduction is not itself a failed GPU stage.
+
+For the verified-context route, `cpu_oracle_audit.coverage_match` and
+`cpu_oracle_audit.inventory_match` report the two independent checks.
 `internal-mismatch` is an audit failure, even when verified CPU coverage is
-available. Unverified native inventory is withheld after a native-buffer
-audit mismatch.
+available. Unverified native inventory is withheld.
 
 ## Read Timings
 
@@ -52,6 +59,9 @@ audit mismatch.
   route; CUDA event times are not process wall time.
 - `native_sparse_coverage_s`: time spent trying the sparse `gdstk` route,
   including declines. Use the mode to check whether its result was used.
+- `native_sparse_proof_s` and `native_sparse_boolean_s`: proof (including
+  retained inventory) and coverage on the verified-context route. Both are
+  already included in `native_sparse_coverage_s`.
 - `layer_summary_s`, `policy_classification_s`, `polygon_inventory_delta_s`,
   and `markdown_format_s`: host work after extraction, including the full
   vertex sidecar in the Markdown timing.
@@ -85,6 +95,10 @@ that can change a vertex hash without changing any geometry. When comparing
 engines, compare full vertex sequences modulo cyclic rotation or reversal,
 grouped by direction, layer, and datatype. Do not treat matching areas alone
 as proof of equal geometry or discard meaningful vertices.
+
+For vertex parity, use the same allowed-region settings in both runs.
+Classification can split coverage into new fragments. The unclassified
+sidecar is the best reference for the underlying directional coverage.
 
 Exact diff Markdown files are intended for staged LLM review, not linear
 full-file reading. The default read protocol for agents is:

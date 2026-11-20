@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Callable
 
 import numpy as np
@@ -17,6 +19,23 @@ _WORKER_NEW_BY_LAYER = None
 _WORKER_PRECISION = 1.0
 _WORKER_BUFFER = None
 _ALIGNED_SPARSE_MAX_CHANGED = 4096
+_BOOLEAN_WARNING_LOCK = RLock()
+
+
+class _BooleanEvidenceError(RuntimeError):
+    pass
+
+
+def _checked_gdstk_boolean(operand1, operand2, operation: str, *, precision: float):
+    import gdstk
+
+    # gdstk can return partial polygons after a numerical error.
+    with _BOOLEAN_WARNING_LOCK, warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        try:
+            return gdstk.boolean(operand1, operand2, operation, precision=precision)
+        except RuntimeWarning as exc:
+            raise _BooleanEvidenceError(f"gdstk {operation}: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -156,9 +175,7 @@ def _run_aligned_sparse_exact_oracle(
     """Compare index-aligned buffers without visiting geometry outside the delta and its context."""
     if (
         old.polygon_count == 0
-        or old.layer_table != new.layer_table
-        or not np.array_equal(old.layer_ids, new.layer_ids)
-        or not np.array_equal(old.polygon_offsets, new.polygon_offsets)
+        or not _record_layouts_match(old, new)
         or np.any(old.polygon_offsets[1:] <= old.polygon_offsets[:-1])
     ):
         return None
@@ -198,6 +215,14 @@ def _run_aligned_sparse_exact_oracle(
 
         diffs.append(_exact_layer_diff_task(ExactLayerTask(layer, 1.0, points(old), points(new))))
     return ExactOracleResult(tuple(sorted(diffs, key=lambda diff: diff.layer)))
+
+
+def _record_layouts_match(old: PolygonBuffer, new: PolygonBuffer) -> bool:
+    return (
+        old.layer_table == new.layer_table
+        and np.array_equal(old.polygon_offsets, new.polygon_offsets)
+        and np.array_equal(old.layer_ids, new.layer_ids)
+    )
 
 
 def _layer_task_specs(
@@ -494,8 +519,6 @@ def _bbox_overlaps_closed(left: tuple[int, int, int, int], right: tuple[int, int
 def _exact_layer_diff_task(
     task: ExactLayerTask,
 ) -> LayerExactDiff:
-    import gdstk
-
     layer = task.layer
     if task.old_points is None or task.new_points is None:
         if _WORKER_OLD_BY_LAYER is None or _WORKER_NEW_BY_LAYER is None:
@@ -516,13 +539,12 @@ def _exact_layer_diff_task(
     origin = _layer_origin(old_points, new_points)
     old_polys = _to_gdstk_polygons(old_points, layer, origin)
     new_polys = _to_gdstk_polygons(new_points, layer, origin)
-    old_minus = gdstk.boolean(old_polys, new_polys, "not", precision=precision) or []
-    new_minus = gdstk.boolean(new_polys, old_polys, "not", precision=precision) or []
+    old_minus = _checked_gdstk_boolean(old_polys, new_polys, "not", precision=precision)
+    new_minus = _checked_gdstk_boolean(new_polys, old_polys, "not", precision=precision)
     if clip_bbox is not None:
         clip_rect = [_bbox_rectangle(clip_bbox, layer, origin)]
-        old_minus = gdstk.boolean(old_minus, clip_rect, "and", precision=precision) or []
-        new_minus = gdstk.boolean(new_minus, clip_rect, "and", precision=precision) or []
-    xor = gdstk.boolean(old_minus, new_minus, "or", precision=precision) or []
+        old_minus = _checked_gdstk_boolean(old_minus, clip_rect, "and", precision=precision)
+        new_minus = _checked_gdstk_boolean(new_minus, clip_rect, "and", precision=precision)
     old_fragments, new_fragments = _cancel_symmetric_direction_fragments(
         _fragments_from_gdstk(old_minus, origin),
         _fragments_from_gdstk(new_minus, origin),
@@ -554,10 +576,8 @@ def _merge_layer_stripes(stripes) -> LayerExactDiff:
 def _union_fragments(polygons: tuple[tuple[tuple[int, int], ...], ...], layer: LayerSpec) -> tuple[DiffFragment, ...]:
     if not polygons:
         return ()
-    import gdstk
-
     origin = _layer_origin(polygons)
-    merged = gdstk.boolean(_to_gdstk_polygons(polygons, layer, origin), [], "or", precision=1.0) or []
+    merged = _checked_gdstk_boolean(_to_gdstk_polygons(polygons, layer, origin), [], "or", precision=1.0)
     return _fragments_from_gdstk(merged, origin)
 
 

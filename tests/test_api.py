@@ -17,10 +17,12 @@ from gdsdiff import (
     FailurePolicy,
     compare_gds_files,
 )
+from gdsdiff.backends import cuda_ctypes
 from gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
 from gdsdiff.config import LayerSpec
 from gdsdiff.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
 from gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.tiling import run_cpu_tile_prefilter
 
 requires_posix_native = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
 
@@ -775,6 +777,7 @@ def test_structural_guard_falls_back_when_structure_matches(tmp_path, monkeypatc
             "fallback_reason": None,
         },
     )
+    monkeypatch.setattr(cuda_ctypes, "run_cuda_ctypes_tile_prefilter", run_cpu_tile_prefilter)
 
     result = compare_gds_files(
         CompareConfig(old_path, new_path, backend="cuda", tile_size=10),
@@ -784,6 +787,7 @@ def test_structural_guard_falls_back_when_structure_matches(tmp_path, monkeypatc
     payload = result.report.to_json_dict()
 
     assert result.status == CompareStatus.EQUIVALENT
+    assert payload["exact_fallback"]["mode"] == "windowed"
     assert "structural_guard" not in payload["backend"]
 
 
@@ -870,6 +874,7 @@ def test_native_geometry_guard_falls_back_when_geometry_matches(tmp_path, monkey
             "fallback_reason": None,
         },
     )
+    monkeypatch.setattr(cuda_ctypes, "run_cuda_ctypes_tile_prefilter", run_cpu_tile_prefilter)
 
     result = compare_gds_files(
         CompareConfig(old_path, new_path, backend="cuda", tile_size=10),
@@ -879,4 +884,5 @@ def test_native_geometry_guard_falls_back_when_geometry_matches(tmp_path, monkey
     payload = result.report.to_json_dict()
 
     assert result.status == CompareStatus.EQUIVALENT
+    assert payload["exact_fallback"]["mode"] == "windowed"
     assert "native_geometry_guard" not in payload["backend"]

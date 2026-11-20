@@ -68,6 +68,10 @@ or when stage timings are nested.
 - GPU acceleration does not implement a general polygon Boolean oracle.
   Rectangle coverage, record deltas, and source-edge work have accelerator
   implementations; sparse and hole-aware corrections may use `gdstk`.
+- A `gdstk` hole-link warning does not certify a polygon. Check the report
+  for a verified sparse recovery, or use the independent CPU audit for
+  complex source-edge results. An unrecovered numerical error is not an
+  exact verdict.
 - Full-wafer flattening can be impractical; use profile/readback checks unless
   wafer-level geometry itself changed.
 - The comparator is only as stable as the pinned/local `gdstk` polygonization

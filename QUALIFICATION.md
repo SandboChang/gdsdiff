@@ -4,11 +4,11 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
 
 - History: 15 relevant source commits retained with original authors, dates,
   and messages, followed by two standalone migration commits.
-- Independence: no shipping or test import references `scgds` or `projects`.
+- Independence: shipping code and tests do not import the original consuming project.
 - API: all 112 generic baseline root exports and signatures were preserved
   after normalizing package and version names. The standalone root has 118
   exports after adding the documented extraction types/parsers, version, and
-  diagnostics; the Calibrator-specific profile factory moved back to `scgds`.
+  diagnostics; the project-specific profile factory stayed with the consumer.
 - Correctness: normalized report JSON, semantic diff GDS, and CLI help exactly
   match the embedded baseline.
 - Tests: the extraction baseline CPU-only suite produced 266 passes and 62
@@ -37,7 +37,7 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
   Python's unrelated metadata/email/ZIP modules into every comparison process.
 - Packaging: wheel and sdist built successfully, passed `twine check`, and the
   wheel contains the report schema, `py.typed`, CUDA/Metal/native sources, and
-  no tests or `scgds` package. A clean wheel-only environment passed
+  no tests or consumer package. A clean wheel-only environment passed
   `pip check`, imports, module CLI, and diagnostics outside the source tree.
 - RC1 publication rehearsal: clean `/tmp` snapshots produced wheel and sdist;
   both rebuilt and installed outside the source tree with `uv`, and the wheels
@@ -54,3 +54,23 @@ Qualified on 2026-07-17 under WSL2 Linux x86_64 with Python 3.14.4.
   disappeared between probes; real Apple Silicon evidence is non-blocking.
 
 No TestPyPI or PyPI upload, Git tag, or release was created.
+
+## 0.2.x Compatibility
+
+Compatibility checks used separate locked environments for the released
+`v0.1.0` (`6bdc0c7`), the 0.2.0 source revision (`753a352`), and the
+optimized follow-up (`441498f`). Check the imported source path and revision
+as well as the distribution version when reproducing these comparisons.
+
+On the synthetic matrix, previously supported cases kept the same selection,
+directional vertex evidence, inventory multiplicity, and exit meaning.
+Orthogonal references newly complete on the native route. When native input
+is rejected, optional GPU now reports the failure and returns exact CPU
+evidence when possible. Required GPU still exits 2 if no device work ran.
+An unrecovered Boolean warning is not exact evidence. The old consumer-specific
+native-cache alias has been retired; use `GDSDIFF_NATIVE_CACHE_DIR`.
+
+The verified-context correction compares full vertices and inventory against
+an independent `gdstk` read. The older, unaudited source-edge route is not a
+substitute for that check on complex contours: in qualification, an annular
+fixture needed `--audit-cpu-oracle` to obtain the CPU reference fragments.

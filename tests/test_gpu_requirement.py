@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 
 import gdstk
 import pytest
@@ -12,6 +13,8 @@ from gdsdiff import source_edge_diff
 from gdsdiff.backends import cuda_ctypes
 from gdsdiff.backends.polygon_extract_ctypes import NativePolygonExtraction, PolygonExtractCtypesUnavailable
 from gdsdiff.cli import main
+from gdsdiff.exact_diff_markdown import PolygonInventoryDelta, _canonical_inventory_points
+from gdsdiff.exact_oracle import _BooleanEvidenceError
 from gdsdiff.native import NativeCapabilities, discover_native_capabilities
 from gdsdiff.rect_coverage import RectCoverageUnsupported
 
@@ -46,6 +49,28 @@ def test_gpu_runtime_failure_is_reported_as_cpu_evidence(tmp_path, monkeypatch, 
     assert report["exact_fallback"]["cpu_evidence_status"] == "differences-found"
     assert report["backend"]["name"] == "cpu"
     assert report["backend"]["gpu_work_performed"] is False
+
+
+def test_cuda_tile_prefilter_failure_is_reported_as_cpu_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_module, "discover_native_capabilities", lambda: _capabilities(cuda=True))
+
+    def fail_prefilter(*args):
+        raise cuda_ctypes.CudaCtypesUnavailable("CUDA tile prefilter unavailable")
+
+    monkeypatch.setattr(cuda_ctypes, "run_cuda_ctypes_tile_prefilter", fail_prefilter)
+    monkeypatch.setattr(cuda_ctypes, "release_cuda_device_memory", lambda: None)
+    old, _ = _pair(tmp_path)
+    result = compare_gds_files(CompareConfig(old, old, backend="cuda"), use_fast_shortcuts=False)
+
+    assert result.status == CompareStatus.IDENTICAL
+    assert result.exit_code == 0
+    assert result.report.exact_verification_complete is True
+    assert result.report.exact_fallback["cpu_evidence_status"] == "identical"
+    assert result.report.exact_fallback["failures"] == [
+        {"stage": "gpu-tile-prefilter", "reason": "CUDA tile prefilter unavailable"},
+    ]
+    assert result.report.backend["name"] == "cpu"
+    assert result.report.backend["gpu_work_performed"] is False
 
 
 def test_gpu_required_parse_failure_runs_cpu_once_not_as_audit(tmp_path, monkeypatch):
@@ -214,7 +239,7 @@ def test_gpu_hole_correction_reuses_native_buffers_and_matches_independent_oracl
     assert "native inventory is not reported" in " ".join(mismatch.report.errors)
 
 
-def _nested_sparse_pair(tmp_path, *, inventory_only=False):
+def _nested_sparse_pair(tmp_path, *, inventory_only=False, extra_polygon=False):
     old, new = tmp_path / "before.gds", tmp_path / "after.gds"
     outer = [(0, 0), (20, 0), (0, 20)]
     inner = [(2, 2), (6, 2), (2, 6)]
@@ -227,6 +252,8 @@ def _nested_sparse_pair(tmp_path, *, inventory_only=False):
             top.add(gdstk.Polygon(outer, layer=1))
             points = inner if path == old else [(2, 2), (7, 2), (2, 6)]
         top.add(gdstk.Polygon(points, layer=1))
+        if extra_polygon and path == new:
+            top.add(gdstk.Polygon([(60, 60), (64, 60), (60, 64)], layer=2, datatype=3))
         lib.write_gds(path)
     return old, new
 
@@ -237,6 +264,123 @@ def _diff_gds_coverage(path):
         for polygon in cell.polygons:
             by_category.setdefault((cell.name, polygon.layer, polygon.datatype), []).append(polygon)
     return by_category
+
+
+def _sidecar_vertex_records(path):
+    rows = (json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    return sorted(
+        (row["kind"], row["direction"], row["layer"], row["datatype"],
+         _canonical_inventory_points(tuple(map(tuple, row["vertices_dbu"]))))
+        for row in rows
+    )
+
+
+def test_cuda_unaligned_hole_correction_audits_coverage_and_inventory(tmp_path, monkeypatch):
+    if not discover_native_capabilities().cuda_ctypes_available:
+        pytest.skip("CUDA polygon backend unavailable")
+    old, new = _nested_sparse_pair(tmp_path, extra_polygon=True)
+    reference = compare_gds_files(
+        CompareConfig(old, new, backend="cpu", evidence_engine="gdstk-oracle"),
+        exact_diff_markdown_path=tmp_path / "cpu.md",
+    )
+    config = CompareConfig(old, new, backend="cuda", require_gpu=True)
+    release, extract = cuda_ctypes.release_cuda_device_memory, api_module._extract_pair
+    events = []
+
+    def track_release():
+        events.append("release")
+        return release()
+
+    def track_extract(*args, **kwargs):
+        assert events[-1] == "release"
+        events.append("independent-read")
+        return extract(*args, **kwargs)
+
+    monkeypatch.setattr(cuda_ctypes, "release_cuda_device_memory", track_release)
+    monkeypatch.setattr(api_module, "_extract_pair", track_extract)
+    result = compare_gds_files(config, audit_cpu_oracle=True, exact_diff_markdown_path=tmp_path / "cuda.md")
+    exact = result.report.exact_fallback
+    assert events == ["release", "independent-read"]
+    assert result.exit_code == 1
+    assert result.exact_result == reference.exact_result
+    assert result.report.backend["gpu_requirement_met"] is True
+    assert result.report.exact_verification_complete
+    assert not exact["failures"]
+    assert exact["sparse_coverage"]["coverage_scope"] == "full-layout-verified-context-reduction"
+    assert exact["cpu_oracle_audit"]["match"] is True
+    assert exact["cpu_oracle_audit"]["coverage_match"] is True
+    assert exact["cpu_oracle_audit"]["inventory_match"] is True
+    assert result.report.timings["polygon_inventory_delta_source"] == "verified-sparse-record-context"
+    assert _sidecar_vertex_records(tmp_path / "cuda_diff_vertices.jsonl") == _sidecar_vertex_records(
+        tmp_path / "cpu_diff_vertices.jsonl",
+    )
+
+    verify = api_module._run_full_exact_verification
+
+    def missing_inventory(*args, **kwargs):
+        return replace(verify(*args, **kwargs), polygon_inventory_delta=PolygonInventoryDelta((), ()))
+
+    monkeypatch.setattr(api_module, "_run_full_exact_verification", missing_inventory)
+    mismatch = compare_gds_files(config, audit_cpu_oracle=True, exact_diff_markdown_path=tmp_path / "bad.md")
+    assert mismatch.status == CompareStatus.INTERNAL_MISMATCH
+    assert mismatch.exit_code == 2
+    assert mismatch.report.exact_fallback["cpu_oracle_audit"]["coverage_match"] is True
+    assert mismatch.report.exact_fallback["cpu_oracle_audit"]["inventory_match"] is False
+    assert mismatch.exact_result == reference.exact_result
+    assert mismatch.report.inventory_delta_count is None
+    assert all(row[0] == "coverage_component" for row in _sidecar_vertex_records(tmp_path / "bad_diff_vertices.jsonl"))
+
+
+def test_cuda_unaligned_numerical_failure_never_reports_exact_evidence(tmp_path, monkeypatch):
+    if not discover_native_capabilities().cuda_ctypes_available:
+        pytest.skip("CUDA polygon backend unavailable")
+    old, new = _nested_sparse_pair(tmp_path, extra_polygon=True)
+
+    def fail_coverage(*args, **kwargs):
+        raise _BooleanEvidenceError("gdstk reflected vertex loops disagree")
+
+    monkeypatch.setattr(api_module, "_run_verified_sparse_exact_oracle", fail_coverage)
+    result = compare_gds_files(
+        CompareConfig(old, new, backend="cuda", require_gpu=True),
+        exact_diff_markdown_path=tmp_path / "failed.md",
+        diff_gds_path=tmp_path / "failed.gds",
+    )
+    assert result.exit_code == 2
+    assert result.status == CompareStatus.INCOMPLETE_EVIDENCE
+    assert result.report.backend["gpu_work_performed"] is True
+    assert not result.report.exact_verification_complete
+    assert [entry["stage"] for entry in result.report.exact_fallback["failures"]] == [
+        "native-sparse-coverage", "exact-hole-correction", "cpu-fallback",
+    ]
+    assert not (tmp_path / "failed.gds").exists()
+    assert not (tmp_path / "failed_diff_vertices.jsonl").exists()
+
+
+def test_incomplete_gpu_candidates_are_reported_and_cpu_proof_recovers(tmp_path, monkeypatch):
+    if not discover_native_capabilities().cuda_ctypes_available:
+        pytest.skip("CUDA polygon backend unavailable")
+    old, new = _nested_sparse_pair(tmp_path, extra_polygon=True)
+    delta_bounds = api_module._record_delta_bounds
+
+    def missing_layer(*args):
+        return {layer: bounds for layer, bounds in delta_bounds(*args).items() if layer.layer != 2}
+
+    monkeypatch.setattr(api_module, "_record_delta_bounds", missing_layer)
+    result = compare_gds_files(
+        CompareConfig(old, new, backend="cuda", require_gpu=True),
+        exact_diff_markdown_path=tmp_path / "fallback.md",
+    )
+    exact = result.report.exact_fallback
+    assert result.exit_code == 1
+    assert result.report.exact_verification_complete
+    assert result.report.backend["gpu_requirement_met"] is True
+    assert exact["failures"] == [
+        {"stage": "gpu-record-delta-proof", "reason": "records outside GPU candidate bounds differ"},
+    ]
+    assert result.report.timings["polygon_inventory_delta_source"] == "independent-gdstk-extraction"
+    assert exact["source_edge_cpu_oracle_fallback"]["input"] == "independent-gdstk-extraction"
+    assert any(row[:4] == ("source_polygon_inventory", "inventory_after_only", 2, 3)
+               for row in _sidecar_vertex_records(tmp_path / "fallback_diff_vertices.jsonl"))
 
 
 def test_cuda_sparse_coverage_matches_exact_gdstk_and_audits_after_release(tmp_path, monkeypatch):

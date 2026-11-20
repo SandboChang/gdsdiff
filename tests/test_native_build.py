@@ -11,11 +11,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
 import gdsdiff
 import gdsdiff.native as native_module
 from gdsdiff.native import CUDA_ARCH_ENV, LEGACY_CUDA_ARCH_ENV, discover_native_capabilities, nvcc_architecture_flags
-from gdsdiff.native_cache import (
-    ENV_NATIVE_CACHE_DIR,
-    LEGACY_ENV_NATIVE_CACHE_DIR,
-    cached_native_library_path,
-)
+from gdsdiff.native_cache import ENV_NATIVE_CACHE_DIR, cached_native_library_path
 
 
 def _repo_root() -> Path:
@@ -112,13 +108,10 @@ def test_native_cache_path_uses_branded_external_override(monkeypatch, tmp_path)
     assert path.name == "_probe.so"
 
 
-def test_native_cache_and_cuda_architecture_honor_legacy_fallbacks(monkeypatch, tmp_path):
-    monkeypatch.delenv(ENV_NATIVE_CACHE_DIR, raising=False)
-    monkeypatch.setenv(LEGACY_ENV_NATIVE_CACHE_DIR, str(tmp_path))
+def test_cuda_architecture_honors_legacy_fallback(monkeypatch):
     monkeypatch.delenv(CUDA_ARCH_ENV, raising=False)
     monkeypatch.setenv(LEGACY_CUDA_ARCH_ENV, "89")
 
-    assert cached_native_library_path("_probe.so").parent.parent == tmp_path
     assert discover_native_capabilities().cuda_architectures == ("89",)
 
 

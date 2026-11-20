@@ -16,7 +16,6 @@ from typing import Callable, Iterable, Iterator
 
 
 ENV_NATIVE_CACHE_DIR = "GDSDIFF_NATIVE_CACHE_DIR"
-LEGACY_ENV_NATIVE_CACHE_DIR = "SCGDS_NATIVE_CACHE_DIR"
 
 
 def cached_native_library_path(filename: str) -> Path:
@@ -78,7 +77,7 @@ def ensure_cached_native_library(
 
 
 def native_cache_dir() -> Path:
-    configured = os.environ.get(ENV_NATIVE_CACHE_DIR) or os.environ.get(LEGACY_ENV_NATIVE_CACHE_DIR)
+    configured = os.environ.get(ENV_NATIVE_CACHE_DIR)
     if configured:
         base = Path(configured).expanduser()
     elif sys.platform == "darwin":

@@ -56,29 +56,6 @@ Useful options:
 
 Allowed policy directions are `addition`, `removal`, `both`, and `xor`.
 
-## Workflow Wrapper
-
-The consuming `scgds` repository provides a project-output workflow wrapper:
-
-```bash
-.venv/bin/python -m scgds.tools.run_gds_geometry_check path/to/output.gds --artifacts-dir outputs/gds_check --rebuild-command ".venv/bin/python path/to/stage.py" --top TOP
-```
-
-The wrapper:
-
-1. Copies the current output GDS as a temporary baseline.
-2. Runs the optional rebuild command.
-3. Compares the baseline against the rebuilt output.
-4. Writes `result.json`, `compare_report.json`, `diff.gds`, and `summary.md`.
-5. Optionally runs an assembly profile such as `--assembly-profile calibrator-model1`.
-6. Optionally appends a design-history entry.
-7. Moves the temporary baseline into `.dump/gds_geometry_check_<label>/`.
-
-For work that needs the current compact output diff Markdown, call `gdsdiff`
-with `--output-dir` or `--exact-diff-markdown` so the generated Markdown comes
-from the standard exact-diff reporter. The wrapper is not required to use the
-standalone comparator.
-
 ## Benchmarking
 
 Run the benchmark harness with:
@@ -98,23 +75,31 @@ Inventory and coverage are separate:
 
 - Rectangle coverage takes priority when the native inputs qualify. It uses
   the accelerator's exact rectangle coverage implementation.
-- For other CUDA inputs, device kernels compare source records for inventory
-  and the coverage engine builds context and traces source edges.
+- For other CUDA inputs, device kernels compare source records and the
+  coverage engine builds context and traces source edges.
 - If tracing finds nested loops that already require exact hole correction,
-  CUDA can skip the rest of boundary assembly for eligible aligned sparse
-  input. `gdstk` computes directional coverage from the changed polygons and
-  all same-layer context touching their bounds. The reduction checks integer
-  vertices, not just device hashes.
+  CUDA can skip the rest of boundary assembly on proven sparse edits. Aligned
+  input keeps the existing fast path. For different record layouts, CUDA delta
+  bounds propose candidates, not proof: the host verifies omitted records by
+  layer/datatype and full integer vertex multisets. It recomputes inventory
+  from the retained records and checks that every unmatched polygon has its
+  full bounds among the candidates. Touching same-layer context is retained.
+- Directional Booleans run at the original DBU. If a Boolean warns, disjoint
+  closed bounding-box components are tried separately. A warning in a
+  component can be recovered only if two grid-preserving reflections yield
+  the same full inverse-transformed loops. Partial or disagreeing results
+  cannot be used as exact evidence.
 - If the sparse reduction declines or the engine does not find that hole
   condition, the normal coverage route continues. Failing GPU stages are
   reported, and the comparator attempts exact CPU fallback where possible.
   Check `exact_verification_complete` before using any result.
 
 `gpu-polygon-cuda-record-delta-sparse-gdstk` identifies the hybrid sparse route.
-It does not imply the Boolean ran on CUDA. `--audit-cpu-oracle` uses
-independently extracted inputs rather than trusting native buffer reuse.
-A native-buffer audit mismatch returns exit 2 and withholds unverified
-inventory. See the [report guide](gdsdiff_report.md) for the evidence fields.
+It does not imply the Boolean ran on CUDA. `--audit-cpu-oracle` reopens both
+original files after GPU cleanup. For different record layouts it derives
+candidate bounds independently and compares full directional vertices and
+inventory multiplicity. A native-buffer audit mismatch returns exit 2 and
+withholds unverified inventory. See the [report guide](gdsdiff_report.md).
 
 Do not describe shortcut/native-guard timings as GPU polygon evidence timings.
 Reports must distinguish shortcut verdicts, GPU kernel activity, and CPU oracle

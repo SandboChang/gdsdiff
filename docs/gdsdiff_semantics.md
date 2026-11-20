@@ -41,7 +41,7 @@ strings ending in `.5` because polygon twice-area is tracked as an integer.
 Source-polygon inventory is a separate comparison, so equal filled geometry
 does not hide a split, merge, or duplicate change.
 
-For proven aligned sparse edits, both sides contain the same geometry off
+For proven sparse edits, both sides contain the same geometry off
 the delta. Exact reduction keeps every changed polygon and every common
 same-layer polygon whose bounds touch the changed bounds, then runs the
 directional Booleans on that reduced input. A decline does not prove equality;

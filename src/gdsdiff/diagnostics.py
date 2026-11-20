@@ -6,7 +6,7 @@ import sys
 from typing import Any, Sequence
 
 from .native import discover_native_capabilities
-from .native_cache import ENV_NATIVE_CACHE_DIR, LEGACY_ENV_NATIVE_CACHE_DIR, native_cache_dir
+from .native_cache import ENV_NATIVE_CACHE_DIR, native_cache_dir
 
 
 def backend_diagnostics() -> dict[str, Any]:
@@ -24,7 +24,7 @@ def backend_diagnostics() -> dict[str, Any]:
         "native_cache": {
             "path": str(native_cache_dir()),
             "environment": ENV_NATIVE_CACHE_DIR,
-            "legacy_environment": LEGACY_ENV_NATIVE_CACHE_DIR,
+            "legacy_environment": None,
         },
         "capabilities": discover_native_capabilities().to_json(),
     }

@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from .exact_oracle import format_twice_area
 from .geometry import PolygonBuffer, polygon_bbox, polygon_twice_area
@@ -56,8 +56,19 @@ class PolygonInventoryDelta:
 
 
 def build_polygon_inventory_delta(old_buffer: PolygonBuffer, new_buffer: PolygonBuffer) -> PolygonInventoryDelta:
-    old_counter, old_indices_by_key = _polygon_inventory_index(old_buffer)
-    new_counter, new_indices_by_key = _polygon_inventory_index(new_buffer)
+    return _inventory_delta_for_indices(
+        old_buffer, range(old_buffer.polygon_count), new_buffer, range(new_buffer.polygon_count),
+    )
+
+
+def _inventory_delta_for_indices(
+    old_buffer: PolygonBuffer,
+    old_indices: Iterable[int],
+    new_buffer: PolygonBuffer,
+    new_indices: Iterable[int],
+) -> PolygonInventoryDelta:
+    old_counter, old_indices_by_key = _polygon_inventory_index(old_buffer, old_indices)
+    new_counter, new_indices_by_key = _polygon_inventory_index(new_buffer, new_indices)
     removed: list[PolygonInventoryRecord] = []
     added: list[PolygonInventoryRecord] = []
     for key in sorted(set(old_counter) | set(new_counter)):
@@ -745,10 +756,12 @@ def _points_hash(component: ClassifiedComponent) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _polygon_inventory_index(buffer: PolygonBuffer) -> tuple[Counter[tuple[object, ...]], dict[tuple[object, ...], list[int]]]:
+def _polygon_inventory_index(
+    buffer: PolygonBuffer, indices: Iterable[int],
+) -> tuple[Counter[tuple[object, ...]], dict[tuple[object, ...], list[int]]]:
     counter: Counter[tuple[object, ...]] = Counter()
     indices_by_key: dict[tuple[object, ...], list[int]] = defaultdict(list)
-    for index in range(buffer.polygon_count):
+    for index in indices:
         layer = buffer.layer_table.layers[int(buffer.layer_ids[index])]
         vertices = buffer.polygon_vertices(index)
         if len(vertices) == 0:

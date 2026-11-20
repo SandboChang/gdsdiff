@@ -57,9 +57,10 @@ python -m gdsdiff before.gds after.gds --backend cpu --evidence-engine gdstk-ora
 ```
 
 Check `backend.gpu_work_performed` in the CUDA report. Exact evidence can combine
-CUDA inventory comparison with `gdstk` coverage, so GPU use does not imply that
-every stage ran on device. Add `--audit-cpu-oracle` to a GPU comparison to reread
-both inputs independently and audit coverage.
+CUDA record comparison with `gdstk` coverage, so GPU use does not imply that
+every stage ran on device. For exact hole correction, the sparse route can
+handle differing polygon counts after proving that omitted records match.
+Add `--audit-cpu-oracle` to reread both inputs independently after GPU cleanup.
 
 ## Python API
 

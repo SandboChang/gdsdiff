@@ -1,4 +1,4 @@
-scgds_commit                           gdsdiff_commit
+source_commit                          gdsdiff_commit
 11544143cdc9e4f3aeed9033bf3ead44b6ff11a4 7e3f4e49bebf8e4baa90735ea983da2eabc2e560
 1872126309b933d499744e7ab7dce33575283fe5 a665c26b9f6565c63f75a925f8bc73ab1254b65f
 196d41745fdca525832776fe7d0bfed0b0e6f1dc c74d710627a44b2b8622f9253d1707b1541e9ec3

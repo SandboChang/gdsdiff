@@ -20,9 +20,13 @@ For CUDA CLI qualification, use a repo-local interpreter (native Linux shown):
 ```
 
 Pass the same selection, grid, and policy options and compare full-vertex and
-inventory evidence before timing. Time the CUDA command in fresh processes:
+inventory evidence before timing. For large sparse edits with unequal record
+layouts, the in-run `--audit-cpu-oracle` also rereads both originals and finds
+candidate changes independently. Time the CUDA command in fresh processes:
 one warm-up and at least seven measured runs with the same artifacts, device
 preparation, and cache conditions. Report the median, the actual coverage
 mode, and whether the geometry or OS file cache was warm. An independent CPU
-audit is a separate measurement. Use the [report timing guide](../../docs/gdsdiff_report.md#read-timings)
+audit and one-time native build are separate measurements. Record native
+cache preparation, peak process memory, and GPU event time separately from
+end-to-end wall time. Use the [report timing guide](../../docs/gdsdiff_report.md#read-timings)
 for non-overlapping stage totals. Keep benchmark results in ignored `results/`.
