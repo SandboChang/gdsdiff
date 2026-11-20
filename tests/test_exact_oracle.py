@@ -23,13 +23,14 @@ from gdsdiff.backends.metal import MetalExactUnavailable, MetalManhattanRectExac
 from gdsdiff.backends.metal_ctypes import metal_ctypes_available, run_metal_rect_set_exact_fragments
 from gdsdiff.exact_oracle import (
     ExactLayerTask,
+    _ALIGNED_SPARSE_MAX_CHANGED,
     _component_task_specs,
     _fragments_from_gdstk,
     _run_aligned_sparse_exact_oracle,
     _sparse_rectangle_residual_task_specs,
 )
 from gdsdiff.extract import extract_gds_polygons
-from gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.geometry import FLAG_ZERO_AREA, LayerTable, PolygonBuffer
 from gdsdiff.grid import snap_to_grid
 
 
@@ -104,6 +105,26 @@ def test_aligned_sparse_exact_oracle_declines_misaligned_record_lengths():
 
     assert _run_aligned_sparse_exact_oracle(old, new) is None
     assert run_full_exact_oracle(old, new, workers=1).equivalent
+
+
+def test_aligned_sparse_fast_route_checks_flags_only_in_closed_context():
+    touching = [(10, 1), (10, 2), (10, 3)]
+    outside = [(100, 1), (100, 2), (100, 3)]
+    old = _buffer([_rect(0, 0, 10, 10), touching, outside])
+    new = _buffer([_rect(-1, 0, 9, 10), touching, outside])
+    old.flags[2] = new.flags[2] = FLAG_ZERO_AREA
+    assert _run_aligned_sparse_exact_oracle(old, new, reject_flagged_context=True) is not None
+
+    old.flags[1] = new.flags[1] = FLAG_ZERO_AREA
+    assert _run_aligned_sparse_exact_oracle(old, new, reject_flagged_context=True) is None
+    assert _run_aligned_sparse_exact_oracle(old, new) is not None
+
+
+def test_aligned_sparse_exact_oracle_declines_dense_changes():
+    count = _ALIGNED_SPARSE_MAX_CHANGED + 1
+    old = _buffer([_rect(4 * i, 0, 4 * i + 2, 2) for i in range(count)])
+    new = _buffer([_rect(4 * i + 1, 0, 4 * i + 3, 2) for i in range(count)])
+    assert _run_aligned_sparse_exact_oracle(old, new, reject_flagged_context=True) is None
 
 
 def test_shifted_rectangle_has_directional_differences():

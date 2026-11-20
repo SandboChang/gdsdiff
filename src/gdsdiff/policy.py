@@ -5,9 +5,8 @@ from dataclasses import dataclass, field
 import gdstk
 
 from .config import AllowedRegion, LayerSpec
-from .exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff, format_twice_area
+from .exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff, _gdstk_points_to_global_dbu, format_twice_area
 from .geometry import polygon_bbox, polygon_twice_area
-from .grid import snap_to_grid
 from .semantics import CompareStatus, DifferenceDirection, FailurePolicy
 
 
@@ -244,10 +243,9 @@ def _region_polygon(region: AllowedRegion, layer: LayerSpec, origin: tuple[int, 
 
 
 def _global_points_from_gdstk(polygons: list[gdstk.Polygon], origin: tuple[int, int]) -> tuple[tuple[tuple[int, int], ...], ...]:
-    ox, oy = origin
     result = []
     for polygon in polygons:
-        points = tuple((snap_to_grid(point[0], 1) + ox, snap_to_grid(point[1], 1) + oy) for point in polygon.points)
+        points = _gdstk_points_to_global_dbu(polygon.points, origin)
         if len(points) >= 3 and polygon_twice_area(points):
             result.append(points)
     return tuple(result)

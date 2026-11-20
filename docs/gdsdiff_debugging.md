@@ -4,11 +4,14 @@
 
 When a comparison fails unexpectedly:
 
-1. Confirm the selected top cell and layers.
-2. Inspect `compare_report.json` for `old_input`, `new_input`, and
-   `selection`.
-3. Check `backend.fallback_reason` before assuming GPU code ran.
-4. Inspect per-layer `components`, especially bbox and direction.
+1. Run `python -m gdsdiff inspect` on each file to confirm the intended top,
+   layer/datatype pairs, and DBU.
+2. Inspect `report.json` for `old_input`, `new_input`, and `selection`.
+3. Check `backend.gpu_work_performed`, `backend.gpu_requirement_met` when
+   requested, and `exact_fallback.failures`. An available backend alone does
+   not show that GPU work ran.
+4. Check `status` and exactness, then inspect the affected per-layer components,
+   directional vertices, and inventory in the sidecar.
 5. Open `diff.gds` only as a visual aid; use report coordinates for decisions.
 6. For chip edits, compare local windows around the intended feature.
 7. For wafer/block edits, check top-cell identity, reference counts, layer
@@ -24,6 +27,13 @@ Common causes:
 - The rebuild command failed before comparison.
 - A wafer assembly changed by manifest/reference count without local chip
   geometry changing.
+
+For an independent reference, run the same inputs and selection with
+`--backend cpu --evidence-engine gdstk-oracle`. To audit a GPU comparison in
+the same invocation, use `--audit-cpu-oracle`. It reopens both files and can
+be much slower than normal native-buffer coverage. See
+[report interpretation](gdsdiff_report.md) when artifacts differ in loop order
+or when stage timings are nested.
 
 ## Release Checklist
 
@@ -48,7 +58,6 @@ Common causes:
 
 - Confirm generated cache/artifact files are not accidentally committed.
 - Confirm no generated `.gds` outputs are added to git.
-- Confirm optional Gate F work remains disabled unless separately qualified.
 
 ## Known Limitations
 
@@ -56,7 +65,9 @@ Common causes:
   automatic selection uses prepared capabilities and retains CPU exact fallback.
 - Metal behavior is covered by portable tests; real acceleration requires
   macOS on Apple Silicon with the Xcode command-line tools.
-- No GPU Boolean exact oracle is enabled. `gdstk` remains the exact authority.
+- GPU acceleration does not implement a general polygon Boolean oracle.
+  Rectangle coverage, record deltas, and source-edge work have accelerator
+  implementations; sparse and hole-aware corrections may use `gdstk`.
 - Full-wafer flattening can be impractical; use profile/readback checks unless
   wafer-level geometry itself changed.
 - The comparator is only as stable as the pinned/local `gdstk` polygonization

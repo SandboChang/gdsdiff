@@ -15,3 +15,9 @@ Ordinary `pip` installs remain a required distribution-compatibility gate.
 Changes to comparison semantics, report fields, exit codes, root exports, or
 native acceleration must include focused tests and compatibility notes. Keep
 CPU-only operation fully supported.
+
+For acceleration changes, qualify the full geometry and inventory evidence
+against the independent CPU oracle before reporting timings. See the
+[benchmark instructions](benchmarks/gdsdiff/README.md) and keep the
+[user guide](docs/gdsdiff.md), [report guide](docs/gdsdiff_report.md), and
+[agent workflow](agents/gdsdiff.md) aligned with the shipped behavior.

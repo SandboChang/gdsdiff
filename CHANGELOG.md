@@ -5,6 +5,11 @@
 - Prepare native polygon buffers in parallel without intermediate flattened
   polygons or redundant host hashing on the uncached CUDA path. Report input
   preparation phases and CUDA record upload time separately.
+- Summarize layer counts in one pass and reuse exact integer coordinates when
+  applying allowed regions, without changing the emitted geometry.
+- Stop assembling boundaries once eligible CUDA comparisons prove they need
+  exact hole correction. Then use sparse gdstk coverage on the aligned native
+  buffers and keep the CUDA inventory evidence.
 
 ## 0.2.0
 

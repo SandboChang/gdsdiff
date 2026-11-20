@@ -24,6 +24,23 @@
 - Do not install packages, repair shims, or create a new environment unless the
   user explicitly asks.
 
+## Comparison Workflow
+
+- Use `python -m gdsdiff inspect` on each input when top cells, layers, or DBU
+  are unknown. Compare the intended files, top cells, layers, and grid. The
+  command examples in [the user guide](../docs/gdsdiff.md) use module entrypoints;
+  substitute the matching repo-local interpreter above.
+- For a GPU-required comparison, pass `--backend cuda --require-gpu` (or
+  the requested Metal backend). Use `--output-dir` to collect the standard
+  evidence. Check `status`, exactness, `backend.gpu_work_performed`,
+  `backend.gpu_requirement_met`, and `exact_fallback.failures`. If the GPU
+  attempt fails, report it even when the exact CPU evidence is usable.
+- To get an independent reference, rerun the same selection and allowances
+  with `--backend cpu --evidence-engine gdstk-oracle`, without `--require-gpu`.
+  `--audit-cpu-oracle` instead requests an independent read inside the GPU
+  run, after device cleanup. Neither is the same as `gdstk` coverage computed
+  from already-packed native buffers.
+
 ## Comparator Role And Report Semantics
 
 - Treat the GDS comparator as a neutral evidence generator.
@@ -43,6 +60,11 @@
 - The Markdown should stay small enough for staged LLM review and include
   sidecar ids, hashes, bbox, area, and short previews.
 - The sidecar is the lossless source for full changed vertices.
+- When checking CPU/GPU parity, compare all direction-, layer-, and
+  datatype-specific vertices and inventory multiplicities, not just areas.
+  An exact loop may start at a different vertex or run in reverse across
+  engines. Normalize only that order for verification; do not drop vertices
+  or assume equal hashes prove the comparison is correct.
 - Geometry validation that needs an output diff Markdown file should generate it
   through `gdsdiff`.
 - Treat generated diff Markdown and JSONL sidecars as temporary review
@@ -84,3 +106,16 @@
   such as `cuda_release_s` for the CUDA backend.
 - Optional CPU audit work must run after GPU cleanup, not while retaining the
   GPU context.
+
+## Performance Qualification
+
+- Compare exact evidence before measuring speed. Keep input files, selection,
+  policy, output artifacts, and cache conditions the same across variants.
+  Warm up once and measure at least seven fresh CLI invocations for a CLI
+  wall-time claim.
+- Read the coverage mode separately from the backend name. The sparse
+  CUDA/`gdstk` route performs real GPU record comparison but computes
+  coverage on CPU. Use the [report timing guide](../docs/gdsdiff_report.md#read-timings)
+  to avoid double-counting transfers or summing overlapping per-input stages.
+- Keep independent audit time and one-time backend preparation out of
+  steady-state performance claims unless intentionally measuring them.

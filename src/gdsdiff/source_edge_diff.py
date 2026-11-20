@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from math import hypot, isfinite
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 
@@ -114,7 +114,11 @@ class _SegmentRecord:
     stop: FloatPoint
 
 
-def exact_result_from_source_edges(components: tuple[PolygonComponent, ...]) -> SourceEdgeDiffResult:
+def exact_result_from_source_edges(
+    components: tuple[PolygonComponent, ...],
+    *,
+    exact_on_nested: Callable[[], ExactOracleResult | None] | None = None,
+) -> SourceEdgeDiffResult | ExactOracleResult:
     source_components = _merge_contacting_source_components(components)
     by_layer: dict[object, dict[str, list[DiffFragment]]] = {}
     edge_count = 0
@@ -140,6 +144,15 @@ def exact_result_from_source_edges(components: tuple[PolygonComponent, ...]) -> 
         layer_bucket = by_layer.setdefault(component.layer, {"old": [], "new": []})
         old_minus, old_stats = _cached_component_side_diff(component, direction="old", cache=side_cache)
         new_minus, new_stats = _cached_component_side_diff(component, direction="new", cache=side_cache)
+        # Only replace coverage when this is the same trigger that would
+        # otherwise discard the assembled result and run hole correction.
+        if exact_on_nested is not None and (
+            old_stats.nested_direction_fragment_component_count or new_stats.nested_direction_fragment_component_count
+        ):
+            exact = exact_on_nested()
+            if exact is not None:
+                return exact
+            exact_on_nested = None
         layer_bucket["old"].extend(old_minus)
         layer_bucket["new"].extend(new_minus)
         edge_count += old_stats.boundary_edge_count + new_stats.boundary_edge_count

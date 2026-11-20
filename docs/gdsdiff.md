@@ -7,8 +7,14 @@ whether those differences are intended.
 ## Basic Use
 
 ```bash
-gdsdiff before.gds after.gds --output-dir /tmp/gdsdiff_my_check
+python -m gdsdiff inspect before.gds
+python -m gdsdiff before.gds after.gds --top TOP --layers all --output-dir comparison
 ```
+
+Use `--old-top OLD --new-top NEW` if the top cell names differ, or
+`--layers 1:0,51:0` to select layer/datatype pairs. Omit `--top` only when the
+intended selection is unambiguous. From a checkout use the repo-local
+interpreter described in [AGENTS.md](../AGENTS.md).
 
 The command writes the standard artifact set:
 
@@ -20,7 +26,7 @@ The command writes the standard artifact set:
 
 By default, `gdsdiff` uses `--backend auto`.
 
-- If a supported CUDA backend is available, it uses the neutral `gpu-polygon`
+- If a supported CUDA or Metal backend is available, it uses the neutral `gpu-polygon`
   evidence path.
 - If no suitable GPU backend is available, it falls back to the CPU `gdstk`
   oracle while keeping the same neutral evidence contract.
@@ -30,6 +36,16 @@ By default, `gdsdiff` uses `--backend auto`.
   from runtime availability, and `exact_fallback.cpu_evidence_status` records
   the separate CPU verdict. CPU audit and correction after real GPU work are
   reported separately from CPU-only fallback.
+
+```bash
+python -m gdsdiff before.gds after.gds --backend cuda --require-gpu --output-dir cuda_diff
+python -m gdsdiff before.gds after.gds --backend cpu --evidence-engine gdstk-oracle --output-dir cpu_diff
+```
+
+The first command requires actual device work. The second is an independent
+CPU-only reference that reads the original files, not a reuse of native GPU
+inputs. Use the same top, layers, and allowed regions for both. Do not mix
+`--require-gpu` with `--exact` or `--evidence-engine gdstk-oracle`.
 
 The native GPU evidence path supports translation and unit-magnification
 single references rotated by multiples of 90 degrees with no reflection or
@@ -44,16 +60,26 @@ parallel, so those times should not be added to get pair wall time. Uncached
 CUDA preparation skips host polygon hashes; the CUDA record comparison hashes
 the vertices on device. For that comparison, `h2d_upload_s` is the time spent in
 host-to-device copy calls and is already included in `gpu_source_record_delta_s`.
+The report also separates `layer_summary_s` (layer presence and polygon counts)
+from `policy_classification_s` (applying allowed regions).
 
 For sparse edits on large inputs, the CPU coverage audit can use an aligned
 record reduction after independently reading both full files with `gdstk`. It
 compares integer vertices and retains all common records whose bounds touch a
 changed polygon. The exact backend reports when this reduction was used.
 
+On CUDA, when the boundary engine detects nested loops that would require
+exact hole correction, it can stop the remaining assembly early. The GPU
+supplies inventory evidence and `gdstk` computes coverage from the verified
+aligned native buffers. The report uses `gpu-polygon-cuda-record-delta-sparse-gdstk`
+and records the attempt in `native_sparse_coverage_s`. Other edits, or those
+that do not qualify for the exact reduction, keep the normal coverage path.
+
 When nested boundaries need hole-aware correction, supported native inputs can
 reuse their already-extracted polygon buffers. An explicit `--audit-cpu-oracle`
-still rereads both files independently and checks the corrected vertices, not
-just the areas. A mismatch in that check fails closed.
+still rereads both files independently after GPU cleanup and checks the exact
+vertices, not just the areas. A mismatch in native-buffer coverage fails
+closed and suppresses unverified inventory.
 
 `gdsdiff` is the active command name. The earlier GPU-comparator command name
 is no longer an active entry point.
@@ -71,6 +97,10 @@ Default `gdsdiff` statuses are neutral:
 
 Finding a difference is not a failure of the design. It is the comparator's
 task. Intent review is left to the user or reviewing LLM.
+Default neutral CLI evidence exits 0 when identical, 1 when differences are
+found, and 2 when evidence is incomplete, invalid, or does not meet a requested
+backend requirement. Running with allowances still reports neutral differences;
+the policy-aware CPU oracle can return 0 for allowed-only changes.
 
 ## Review Protocol
 

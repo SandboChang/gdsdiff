@@ -16,15 +16,50 @@ Important top-level fields:
 - `old_input` and `new_input`: source GDS metadata and extraction stats.
 - `semantics`: grid, layer, backend, path, and failure-policy settings.
 - `selection`: selected top cells and layers.
-- `backend`: requested backend, discovered capabilities, selected backend, and
-  fallback reason.
+- `backend`: requested and selected backends, discovered capabilities, and
+  whether device work was performed.
 - `prefilter`: broad-phase candidate-tile summary.
-- `exact_fallback`: full or windowed exact verification details.
+- `exact_fallback`: coverage method, failures, and CPU fallback or audit details.
 - `layers`: per-layer geometry evidence.
 - `allowed_policy`: applied expected-difference policy.
 - `unexpected_summary`: expected and unexpected total areas.
 - `timings`: extraction, exact, and total timings.
 - `artifacts`: emitted JSON, diff GDS, Markdown, or workflow artifact paths.
+
+## Check Exactness And GPU Use
+
+Check `exact_verification_complete` together with `status` and
+`exit_code_category`. A complete CPU fallback does not satisfy
+`--require-gpu`; use `backend.gpu_work_performed` and
+`backend.gpu_requirement_met`, not availability alone. The failure stage and
+reason appear in `exact_fallback.failures`; `cpu_evidence_status` can record
+the independent CPU verdict when the requested GPU run failed.
+
+`exact_fallback.mode` tells you where coverage came from. In
+`gpu-polygon-cuda-record-delta-sparse-gdstk`, CUDA compares source polygons
+for inventory, and `exact_fallback.sparse_coverage` describes the exact
+`gdstk` coverage reduction. This is not a CPU-only fallback. An
+`internal-mismatch` is an audit failure, even when verified CPU coverage is
+available. Unverified native inventory is withheld after a native-buffer
+audit mismatch.
+
+## Read Timings
+
+- `native_parse_s`: wall time to prepare both inputs. Per-input native stage
+  timings can overlap; do not add them together.
+- `gpu_source_record_delta_s`: wall time for record comparison, including
+  host packing and transfers. `h2d_upload_s` is already inside it on this
+  route; CUDA event times are not process wall time.
+- `native_sparse_coverage_s`: time spent trying the sparse `gdstk` route,
+  including declines. Use the mode to check whether its result was used.
+- `layer_summary_s`, `policy_classification_s`, `polygon_inventory_delta_s`,
+  and `markdown_format_s`: host work after extraction, including the full
+  vertex sidecar in the Markdown timing.
+- `cpu_oracle_audit_s` is separate from GPU work; `cuda_release_s` or
+  `metal_release_s` reports device cleanup. Measure CLI wall time externally
+  to include startup, JSON report writing, and process teardown.
+
+## Review Geometry
 
 Layer entries include:
 
@@ -43,10 +78,19 @@ Component entries include direction, bbox, exact area, and classification. Use
 component bboxes and areas for local review; total layer area alone is only
 triage.
 
+In `diff_vertices.jsonl`, check coverage separately from the source-polygon
+inventory, including multiplicity. The sidecar is authoritative for vertices.
+Different exact engines may start a loop at another vertex or reverse it;
+that can change a vertex hash without changing any geometry. When comparing
+engines, compare full vertex sequences modulo cyclic rotation or reversal,
+grouped by direction, layer, and datatype. Do not treat matching areas alone
+as proof of equal geometry or discard meaningful vertices.
+
 Exact diff Markdown files are intended for staged LLM review, not linear
 full-file reading. The default read protocol for agents is:
 
-1. Read only `Comparator Evidence`, `Agent Minimal Read`, and `Layer Summary`.
+1. Read only `Comparator Evidence`, `Agent Minimal Read`, `Agent Review Checklist`,
+   and `Layer Summary`.
    These sections are the minimum factual digest: verdict, exactness, total
    coverage area, inventory-change count, affected layers, union bboxes, and
    the largest changed coverage components.

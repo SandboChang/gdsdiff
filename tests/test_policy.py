@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gdstk
 import numpy as np
+import pytest
 
 from gdsdiff import (
     AllowedRegion,
@@ -12,6 +14,8 @@ from gdsdiff import (
     run_full_exact_oracle,
 )
 from gdsdiff.geometry import LayerTable, PolygonBuffer
+from gdsdiff.grid import snap_to_grid
+from gdsdiff.policy import _global_points_from_gdstk
 
 
 def _buffer(polygons, layer=LayerSpec(1, 0)):
@@ -41,6 +45,27 @@ def _shift_result(layer=LayerSpec(1, 0)):
     old = _buffer([_rect(0, 0, 10, 10)], layer)
     new = _buffer([_rect(2, 0, 12, 10)], layer)
     return run_full_exact_oracle(old, new)
+
+
+@pytest.mark.parametrize(
+    "vertices",
+    [
+        [(-3, -2), (7, 1), (0, 5)],
+        [(-3.5, -2.5), (7.5, 1.5), (0.5, 5.5)],
+        [(-(1 << 54), -2), ((1 << 54) + 4, 1), (0, 5)],
+    ],
+)
+def test_policy_grid_conversion_preserves_vertex_order_and_decimal_rounding(vertices):
+    polygon = gdstk.Polygon(vertices)
+    origin = (500, -1500)
+    expected = tuple((snap_to_grid(x, 1) + origin[0], snap_to_grid(y, 1) + origin[1]) for x, y in polygon.points)
+    assert _global_points_from_gdstk([polygon], origin) == (expected,)
+
+
+def test_policy_grid_conversion_keeps_coordinate_bounds():
+    polygon = gdstk.Polygon([(0, 0), (1 << 63, 1), (0, 5)])
+    with pytest.raises(OverflowError, match="exceeds signed int64 range"):
+        _global_points_from_gdstk([polygon], (0, 0))
 
 
 def test_empty_policy_marks_all_differences_unexpected():

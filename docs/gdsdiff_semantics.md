@@ -2,16 +2,17 @@
 
 ## Authority
 
-The final geometry authority is `gdstk.boolean` on integer snapped polygons.
-Broad-phase candidate discovery can reduce the amount of exact work, but it
-does not decide equality by itself.
+The independent reference is `gdstk.boolean` on integer snapped polygons.
+Native and GPU evidence paths use the same geometry contract. Bounding boxes,
+hashes, and total area alone do not establish exact coverage equality.
 
 ## Inputs
 
-The comparator reads both GDS files with `gdstk.read_gds`. A selected top cell
-is flattened through `Cell.get_polygons(apply_repetitions=True)` under the
-configured path policy. Current MVP path policy is `gdstk`: paths are accepted
-as polygons according to the installed `gdstk` behavior.
+The CPU oracle reads both GDS files with `gdstk.read_gds` and flattens the
+selected cells through `Cell.get_polygons(apply_repetitions=True)` under the
+configured path policy. The default CPU path policy is `gdstk`. GPU evidence
+can instead use native integer polygon extraction on a compatible source
+grid; unsupported native records or transforms can require CPU fallback.
 
 Layer selection is by `(layer, datatype)`. `all` means every layer present in
 either input after extraction.
@@ -37,6 +38,14 @@ For each selected layer, the oracle computes:
 
 Areas are reported in DBU squared. Half-integer exact areas are represented as
 strings ending in `.5` because polygon twice-area is tracked as an integer.
+Source-polygon inventory is a separate comparison, so equal filled geometry
+does not hide a split, merge, or duplicate change.
+
+For proven aligned sparse edits, both sides contain the same geometry off
+the delta. Exact reduction keeps every changed polygon and every common
+same-layer polygon whose bounds touch the changed bounds, then runs the
+directional Booleans on that reduced input. A decline does not prove equality;
+it returns control to the normal coverage path.
 
 ## Expected Differences
 

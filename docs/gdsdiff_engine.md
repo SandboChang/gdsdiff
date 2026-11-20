@@ -22,10 +22,12 @@ explicitly asks to retain them.
 
 Exit codes:
 
-- `0`: identical/equivalent, or only allowed differences under the selected
-  policy.
-- `1`: differences found under the active failure policy.
-- `2`: invalid input, unresolved comparison, backend error, or artifact error.
+- `0`: identical/equivalent. The policy-aware CPU oracle can also pass
+  allowed-only differences.
+- `1`: differences found. The neutral CLI also reports allowed changes as
+  differences rather than judging intent.
+- `2`: invalid input, incomplete evidence, internal mismatch, artifact error,
+  or a required GPU comparison that did not run.
 
 Useful options:
 
@@ -36,16 +38,14 @@ Useful options:
 - `--backend auto|cpu|cuda|metal`: select backend. `auto` prefers a supported
   GPU path and falls back to CPU exact evidence.
 - `--evidence-engine auto|gdstk-oracle|gpu-polygon`: select the evidence
-  generator. `gpu-polygon` uses the native parsed polygon-array path. It can
-  currently produce exact CUDA coverage evidence for rectangle-only inputs,
-  GPU source-record deltas, and canonical source-surplus component probes for
-  general inputs. General non-rectangle coverage XOR remains fail-closed when
-  overlapping surplus polygons require the arbitrary-polygon Boolean kernel,
-  unless `--audit-cpu-oracle` is explicitly requested.
+  generator. Use `--backend cpu --evidence-engine gdstk-oracle` for an
+  independent CPU reference.
+- `--require-gpu`: require real GPU comparison work, not just an available
+  backend. An exact CPU-only fallback can still produce artifacts, but does
+  not satisfy this option.
 - `--exact`: bypass the tiled broad phase and run the full exact oracle.
 - `--audit-cpu-oracle`: when using `--evidence-engine gpu-polygon`, run the
-  CPU `gdstk` oracle explicitly as audit evidence until GPU polygon records are
-  implemented.
+  independent CPU `gdstk` oracle on the original inputs after GPU cleanup.
 - `--allow-region L:D,DIRECTION,X0,Y0,X1,Y1[,HALO]`: mark a bounded expected
   difference.
 - `--allow-whole-layer L:D,DIRECTION`: mark an entire layer/direction expected.
@@ -76,7 +76,8 @@ The wrapper:
 
 For work that needs the current compact output diff Markdown, call `gdsdiff`
 with `--output-dir` or `--exact-diff-markdown` so the generated Markdown comes
-from the standard exact-diff reporter.
+from the standard exact-diff reporter. The wrapper is not required to use the
+standalone comparator.
 
 ## Benchmarking
 
@@ -86,31 +87,34 @@ Run the benchmark harness with:
 .venv/bin/python benchmarks/gdsdiff/run_benchmarks.py --pair smoke:before.gds:after.gds --mode windowed --tile-size 256 --output /tmp/gdsdiff_benchmark_smoke.json
 ```
 
-Benchmark rows include wall-clock time plus comparator extraction/exact/total
-timings. They are end-to-end comparator timings, not kernel-only numbers.
+Benchmark rows include API wall time plus comparator extraction, exact, and
+total timings. To measure the default CUDA CLI with artifact output, follow
+the [benchmark instructions](../benchmarks/gdsdiff/README.md) instead.
 
 ## GPU Polygon Evidence Engine
 
-The target evidence engine is `gpu-polygon`: GPU numeric diff records plus CPU
-Markdown formatting. Current implementation state:
+The `gpu-polygon` engine prepares integer DBU polygon buffers on the host.
+Inventory and coverage are separate:
 
-- Rectangle-only inputs: native GDS parsing plus CUDA rectangle coverage
-  fragments produce exact directional coverage records without calling
-  `gdstk.boolean` in the default evidence path.
-- General non-rectangle inputs: CUDA source-record deltas and canonical
-  source-surplus component probes are available. The source-surplus probe
-  emits compact directional records for unmatched source polygons. In the CUDA
-  path, this probe is derived from GPU record-delta rows with representative
-  polygon indices, so it does not require a full CPU canonicalization pass.
-  A CUDA component-area pass can compute context-expanded directional area
-  totals for those dirty components, but this is still not final exact evidence
-  until GPU boundary-loop/component records are emitted.
-  It is marked exact only when changed polygons are conservatively proven
-  independent. When surplus polygons overlap, the report remains fail-closed with
-  `status=unresolved`, `canonical_surplus_coverage_available=true`,
-  `canonical_surplus_coverage_exact=false`, and `gpu_polygon_available=false`.
-- CPU audit: `--audit-cpu-oracle` runs the CPU `gdstk` oracle explicitly and
-  labels the result as audit evidence, not GPU evidence.
+- Rectangle coverage takes priority when the native inputs qualify. It uses
+  the accelerator's exact rectangle coverage implementation.
+- For other CUDA inputs, device kernels compare source records for inventory
+  and the coverage engine builds context and traces source edges.
+- If tracing finds nested loops that already require exact hole correction,
+  CUDA can skip the rest of boundary assembly for eligible aligned sparse
+  input. `gdstk` computes directional coverage from the changed polygons and
+  all same-layer context touching their bounds. The reduction checks integer
+  vertices, not just device hashes.
+- If the sparse reduction declines or the engine does not find that hole
+  condition, the normal coverage route continues. Failing GPU stages are
+  reported, and the comparator attempts exact CPU fallback where possible.
+  Check `exact_verification_complete` before using any result.
+
+`gpu-polygon-cuda-record-delta-sparse-gdstk` identifies the hybrid sparse route.
+It does not imply the Boolean ran on CUDA. `--audit-cpu-oracle` uses
+independently extracted inputs rather than trusting native buffer reuse.
+A native-buffer audit mismatch returns exit 2 and withholds unverified
+inventory. See the [report guide](gdsdiff_report.md) for the evidence fields.
 
 Do not describe shortcut/native-guard timings as GPU polygon evidence timings.
 Reports must distinguish shortcut verdicts, GPU kernel activity, and CPU oracle

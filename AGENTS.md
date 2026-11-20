@@ -4,6 +4,8 @@ This repository is the standalone `gdsdiff` GDSII comparison library. Durable
 implementation belongs under `src/gdsdiff/`; tests belong under `tests/`.
 Read `agents/gdsdiff.md` before changing comparator semantics, reports,
 artifacts, acceleration, or agent-facing diff workflows.
+Use `docs/gdsdiff.md` and `docs/gdsdiff_report.md` for command and report
+behavior. Keep these docs and the agent workflow current when behavior changes.
 
 ## Environment
 

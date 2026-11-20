@@ -16,6 +16,7 @@ _WORKER_OLD_BY_LAYER = None
 _WORKER_NEW_BY_LAYER = None
 _WORKER_PRECISION = 1.0
 _WORKER_BUFFER = None
+_ALIGNED_SPARSE_MAX_CHANGED = 4096
 
 
 @dataclass(frozen=True)
@@ -149,8 +150,10 @@ def _resolve_worker_count(workers: int | None, layer_count: int) -> int:
     return max(1, int(workers))
 
 
-def _run_aligned_sparse_exact_oracle(old: PolygonBuffer, new: PolygonBuffer) -> ExactOracleResult | None:
-    """Audit a sparse edit on independently extracted, index-aligned records."""
+def _run_aligned_sparse_exact_oracle(
+    old: PolygonBuffer, new: PolygonBuffer, *, reject_flagged_context: bool = False,
+) -> ExactOracleResult | None:
+    """Compare index-aligned buffers without visiting geometry outside the delta and its context."""
     if (
         old.polygon_count == 0
         or old.layer_table != new.layer_table
@@ -163,7 +166,7 @@ def _run_aligned_sparse_exact_oracle(old: PolygonBuffer, new: PolygonBuffer) -> 
     vertex_changes |= old.vertices_xy[:, 1] != new.vertices_xy[:, 1]
     changed = np.logical_or.reduceat(vertex_changes, old.polygon_offsets[:-1].astype(np.intp))
     del vertex_changes
-    if np.count_nonzero(changed) > 4096:
+    if np.count_nonzero(changed) > _ALIGNED_SPARSE_MAX_CHANGED:
         return None
 
     # Both sides contain the same off-delta polygons. They can only mask
@@ -186,6 +189,8 @@ def _run_aligned_sparse_exact_oracle(old: PolygonBuffer, new: PolygonBuffer) -> 
             keep |= (x0 <= right) & (x1 >= left) & (y0 <= top) & (y1 >= bottom)
         indices = layer_indices[keep]
         if len(indices) > 20_000:
+            return None
+        if reject_flagged_context and (old.flags[indices].any() or new.flags[indices].any()):
             return None
 
         def points(buffer: PolygonBuffer) -> tuple[tuple[tuple[int, int], ...], ...]:
@@ -694,19 +699,22 @@ def _to_gdstk_polygons(
     ]
 
 
-def _fragments_from_gdstk(polygons: list[gdstk.Polygon], origin: tuple[int, int]) -> tuple[DiffFragment, ...]:
+def _gdstk_points_to_global_dbu(
+    vertices: np.ndarray, origin: tuple[int, int],
+) -> tuple[tuple[int, int], ...]:
     ox, oy = origin
+    # Integer DBU output is already snapped. Keep decimal rounding and
+    # range checks for fractional, nonfinite, or large coordinates.
+    integer_vertices = vertices.astype(np.int64) if np.abs(vertices).max(initial=0) <= (1 << 52) else None
+    if integer_vertices is not None and np.array_equal(vertices, integer_vertices):
+        return tuple((x + ox, y + oy) for x, y in integer_vertices.tolist())
+    return tuple((snap_to_grid(x, 1) + ox, snap_to_grid(y, 1) + oy) for x, y in vertices)
+
+
+def _fragments_from_gdstk(polygons: list[gdstk.Polygon], origin: tuple[int, int]) -> tuple[DiffFragment, ...]:
     fragments = []
     for polygon in polygons:
-        vertices = polygon.points
-        if vertices.size == 0:
-            continue
-        # Integer DBU output is already snapped. Keep the decimal path for
-        # fractional or out-of-range coordinates.
-        integer_vertices = vertices.astype(np.int64) if np.abs(vertices).max() <= (1 << 52) else None
-        if integer_vertices is not None and np.array_equal(vertices, integer_vertices):
-            points = tuple((x + ox, y + oy) for x, y in integer_vertices.tolist())
-        else:
-            points = tuple((snap_to_grid(x, 1) + ox, snap_to_grid(y, 1) + oy) for x, y in vertices)
-        fragments.append(DiffFragment(points=points, bbox=polygon_bbox(points), twice_area=polygon_twice_area(points)))
+        points = _gdstk_points_to_global_dbu(polygon.points, origin)
+        if points:
+            fragments.append(DiffFragment(points=points, bbox=polygon_bbox(points), twice_area=polygon_twice_area(points)))
     return tuple(fragments)

@@ -1,9 +1,8 @@
 # gdsdiff
 
 `gdsdiff` compares the geometry and hierarchy of two GDSII layouts and emits
-neutral, machine-readable evidence. It supports exact CPU verification by
-default and can use optional CUDA or Apple Metal acceleration when a compatible
-system toolchain and device are available.
+neutral, machine-readable evidence. The CLI selects an available CUDA or Metal
+backend automatically, with exact CPU `gdstk` as the reference and fallback.
 
 The package is usable on CPU-only machines. CUDA, Metal, CMake, and compiler
 toolchains are runtime capabilities, not mandatory Python dependencies.
@@ -14,7 +13,8 @@ toolchains are runtime capabilities, not mandatory Python dependencies.
 python -m pip install gdsdiff
 ```
 
-For local development from this checkout:
+For local development from this checkout, use the `uv` version pinned in
+`pyproject.toml`. On WSL:
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv_wsl UV_LINK_MODE=copy uv sync --locked --no-dev
@@ -23,7 +23,9 @@ TMPDIR=/tmp .venv_wsl_test/bin/python -m pytest
 ```
 
 On WSL, `.venv_wsl` is the clean runtime environment and `.venv_wsl_test` owns
-all test tooling. Use `.venv_mac` on macOS and `.venv` on native Linux.
+all test tooling. On native Linux, run `uv sync --locked --extra dev` and
+`.venv/bin/python -m pytest`. On macOS, set `UV_PROJECT_ENVIRONMENT=.venv_mac`
+for the sync and run tests with `.venv_mac/bin/python -m pytest`.
 
 ## Command line
 
@@ -31,10 +33,11 @@ all test tooling. Use `.venv_mac` on macOS and `.venv` on native Linux.
 python -m gdsdiff before.gds after.gds --output-dir comparison
 ```
 
-Exit codes are stable: `0` means the selected failure policy passed, `1` means
-differences failed the policy, and `2` means the comparison could not produce
-valid evidence. Reports use factual directions such as `coverage_before_only`
-and `coverage_after_only`.
+`--output-dir` writes `report.json`, `exact_diff.md`, and the lossless
+`diff_vertices.jsonl` sidecar. Coverage and source-polygon inventory are
+separate, so a split or merge can be reported even if coverage is unchanged.
+The default neutral comparison returns `0` for identical evidence, `1` for
+differences to review, and `2` when the requested comparison cannot be verified.
 
 To check a single file's units, cells, and geometry layers before comparing:
 
@@ -45,6 +48,18 @@ python -m gdsdiff inspect layout.gds --top TOP --json
 
 Inspection counts stored records without expanding reference arrays. Use `--top`
 when the file has more than one top-level cell.
+
+To require CUDA or run an independent CPU reference:
+
+```bash
+python -m gdsdiff before.gds after.gds --backend cuda --require-gpu --output-dir cuda_diff
+python -m gdsdiff before.gds after.gds --backend cpu --evidence-engine gdstk-oracle --output-dir cpu_diff
+```
+
+Check `backend.gpu_work_performed` in the CUDA report. Exact evidence can combine
+CUDA inventory comparison with `gdstk` coverage, so GPU use does not imply that
+every stage ran on device. Add `--audit-cpu-oracle` to a GPU comparison to reread
+both inputs independently and audit coverage.
 
 ## Python API
 
@@ -67,8 +82,8 @@ extraction = extract_gds_polygons("layout.gds", layers="1:0,2:0")
 print(extraction.buffer.polygon_count)
 ```
 
-See `docs/` for comparison semantics, report format, engine details, and
-debugging guidance.
+See the [command guide](docs/gdsdiff.md), [Python API](docs/api.md),
+[report guide](docs/gdsdiff_report.md), and [agent instructions](agents/gdsdiff.md).
 
 ## Optional acceleration
 
@@ -89,7 +104,7 @@ debugging guidance.
 
 Installation and import never compile GPU code. Inspect the CUDA toolchain with
 `gdsdiff.inspect_cuda_toolchain()`, then build and verify the optional backend
-with `gdsdiff.prepare_cuda()` or `gdsdiff-prepare-cuda --json`. Explicit
+with `gdsdiff.prepare_cuda()` or `python -m gdsdiff.cuda_setup --json`. Explicit
 `backend="cuda"` use retains lazy preparation. Passive diagnostics and
 `discover_native_capabilities()` report only already-prepared backends.
 

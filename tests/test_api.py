@@ -20,8 +20,34 @@ from gdsdiff import (
 from gdsdiff.backends.cuda_ctypes import cuda_ctypes_available
 from gdsdiff.config import LayerSpec
 from gdsdiff.exact_oracle import DiffFragment, ExactOracleResult, LayerExactDiff
+from gdsdiff.geometry import LayerTable, PolygonBuffer
 
 requires_posix_native = pytest.mark.skipif(os.name == "nt", reason="POSIX on-demand native helpers are unavailable on Windows")
+
+
+def test_layer_summaries_use_each_inputs_layer_table_and_ignore_unused_ids():
+    def buffer(ids, layers):
+        return PolygonBuffer(
+            vertices_xy=np.empty((0, 2), dtype=np.int64),
+            polygon_offsets=np.zeros(len(ids) + 1, dtype=np.uint64),
+            layer_ids=np.asarray(ids, dtype=np.uint32),
+            bboxes=np.zeros((len(ids), 4), dtype=np.int64),
+            flags=np.zeros(len(ids), dtype=np.uint32),
+            source_ids=np.arange(len(ids), dtype=np.uint64),
+            layer_table=LayerTable(layers),
+        )
+
+    first, common, later, unused = (LayerSpec(n, 1) for n in (1, 3, 7, 9))
+    old = buffer([0, 2, 0], (common, unused, first))
+    new = buffer([1, 0], (later, common, unused))
+    presence, counts = api_module._layer_summaries(old, new)
+
+    assert list(counts) == [first, common, later]
+    assert counts == {first: (1, 0), common: (2, 1), later: (0, 1)}
+    assert presence == {first: (True, False), common: (True, True), later: (False, True)}
+    assert api_module._layer_summaries(buffer([], (unused,)), buffer([], ())) == ({}, {})
+    with pytest.raises(IndexError, match="layer ID"):
+        api_module._layer_summaries(buffer([(1 << 32) - 1], (first,)), new)
 
 
 def _write_pair(tmp_path, *, shifted=True):
@@ -630,6 +656,7 @@ def test_gpu_polygon_reports_one_dbu_area_change_in_compact_diff(tmp_path):
     assert result.status == CompareStatus.DIFFERENCES_FOUND
     assert payload["exact_verification_complete"] is True
     assert payload["exact_fallback"]["mode"] == "gpu-polygon-cuda-source-edge-records"
+    assert payload["timings"]["native_sparse_coverage_s"] == 0
     assert payload["unexpected_summary"]["unexpected_area_dbu2"] == "1"
     assert payload["inventory_delta_count"] == 2
     assert "coverage_xor_area_dbu2: `1`" in markdown
